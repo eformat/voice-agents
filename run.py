@@ -1,3 +1,5 @@
+"""Run the graph."""
+
 import argparse
 
 from langchain_core.messages import HumanMessage
@@ -5,17 +7,16 @@ from langgraph.graph import START, StateGraph
 
 from src.nodes import (
     SupervisorState,
-    text_to_speech_agent_node,
     supervisor_command_node,
+    text_to_speech_agent_node,
 )
 
-from src.utils import save_mermaid_diagram
 
 def build_graph() -> StateGraph:
     """Build graph using Command for dynamic routing.
 
     Architecture:
-    - Flat graph with three agent nodes
+    - Flat graph with two agent nodes
     - Command handles all routing dynamically (no explicit edges needed beyond START)
     """
     graph = StateGraph(SupervisorState)
@@ -31,12 +32,11 @@ def build_graph() -> StateGraph:
 
     return graph.compile()
 
+
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Command-based routing example")
-    parser.add_argument(
-        "query", nargs="?", default="Can i order a pizza?"
-    )
+    parser.add_argument("query", nargs="?", default="Can i order a pizza?")
     args = parser.parse_args()
 
     print("EXAMPLE: Voice Agents")
@@ -45,7 +45,7 @@ if __name__ == "__main__":
 
     # Build and invoke graph
     graph = build_graph()
-    #save_mermaid_diagram(graph, "artifacts/graph_setup.png")
+    graph.get_graph().print_ascii()
     final_state = graph.invoke({"messages": [HumanMessage(content=args.query)]})
 
     print("\n" + "=" * 70)
