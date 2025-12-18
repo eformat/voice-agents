@@ -13,6 +13,8 @@ dependencies = [
     "requests>=2.32.3",
     "simpleaudio-312compat>=0.1.4",
     "python-dotenv>=1.0.1",
+    "sounddevice>=0.4.6",
+    "SpeechRecognition>=3.10.4",
 ]
 
 [project.optional-dependencies]

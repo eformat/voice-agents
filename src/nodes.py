@@ -15,11 +15,18 @@ from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from src.prompts import (
+    DELIVERY_AGENT_PROMPT,
+    ORDER_AGENT_PROMPT,
+    PIZZA_AGENT_PROMPT,
     SUPERVISOR_PROMPT,
-    TEXT_TO_SPEECH_AGENT_PROMPT,
 )
 from src.tools import (
+    add_to_order,
+    choose_delivery,
+    choose_pizza,
+    convert_speech_to_text,
     convert_text_to_speech,
+    listen_for_user_speech,
 )
 
 load_dotenv()
@@ -50,12 +57,37 @@ TEMPERATURE = 0.0
 # Each agent is a compiled subgraph that can invoke tools during reasoning
 supervisor_agent = create_agent(
     model=llm,  # init_chat_model(MODEL_NAME, temperature=TEMPERATURE),
-    tools=[],  # No tools needed for supervisor
+    tools=[],  # Add to order tool
 )
 
-text_to_speech_agent = create_agent(
-    model=llm,  # init_chat_model(MODEL_NAME, temperature=TEMPERATURE),
-    tools=[convert_text_to_speech],  # Text to speech converter
+order_agent = create_agent(
+    model=llm,
+    tools=[
+        add_to_order,
+        convert_speech_to_text,
+        convert_text_to_speech,
+        listen_for_user_speech,
+    ],  # Add to order tool
+)
+
+pizza_agent = create_agent(
+    model=llm,
+    tools=[
+        choose_pizza,
+        convert_speech_to_text,
+        convert_text_to_speech,
+        listen_for_user_speech,
+    ],  # Choose pizza tool
+)
+
+delivery_agent = create_agent(
+    model=llm,
+    tools=[
+        choose_delivery,
+        convert_speech_to_text,
+        convert_text_to_speech,
+        listen_for_user_speech,
+    ],  # Choose delivery tool
 )
 
 
@@ -68,12 +100,14 @@ class SupervisorState(TypedDict, total=False):
     messages: Annotated[
         list, add_messages
     ]  # Conversation history (uses add_messages reducer)
+    pizza_type: Annotated[str, "The type of pizza the user wants to order."]
 
 
 class SupervisorDecision(BaseModel):
     """Structured output from supervisor for routing decisions."""
 
-    next_agent: Literal["text_to_speech_agent", "none"]
+    next_agent: Literal["order_agent", "pizza_agent", "delivery_agent", "none"]
+    pizza_type: Annotated[str, "The type of pizza the user wants to order."]
     response: str = ""  # Direct response if no routing needed
 
 
@@ -118,19 +152,52 @@ def supervisor_command_node(state: SupervisorState) -> Command:
             AIMessage(content=f"Routing to {decision.next_agent}", name="supervisor")
         ]
     }
+
+    if decision.pizza_type != "":
+        update["pizza_type"] = decision.pizza_type
+        print(f"Supervisor: Extracted pizza_type='{decision.pizza_type}'")
+
     print(f"Supervisor: Routing to {decision.next_agent}")
     return Command[str](goto=decision.next_agent, update=update)
 
 
-def text_to_speech_agent_node(state: SupervisorState) -> Command:
+def order_agent_node(state: SupervisorState) -> Command:
     """Text to speech specialist - converts text to speech."""
     # Invoke agent and return Command to end
-    print("Text to Speech Agent")
+    print("Order Agent")
     response = _invoke_agent(
-        text_to_speech_agent,
-        TEXT_TO_SPEECH_AGENT_PROMPT,
+        order_agent,
+        ORDER_AGENT_PROMPT,
         state["messages"],
-        "text_to_speech_agent",
+        "order_agent",
     )
-    print("Text to Speech Agent: routed to __end__")
+    print("Order Agent: routed to __end__")
+    return Command[str](goto="__end__", update={"messages": [response]})
+
+
+def pizza_agent_node(state: SupervisorState) -> Command:
+    """Pizza agent - chooses a pizza."""
+    # Invoke agent and return Command to end
+    print("Pizza Agent")
+    response = _invoke_agent(
+        pizza_agent,
+        PIZZA_AGENT_PROMPT,
+        state["messages"],
+        "pizza_agent",
+    )
+    print("Pizza Agent: routed to __end__")
+    return Command[str](goto="__end__", update={"messages": [response]})
+
+
+def delivery_agent_node(state: SupervisorState) -> Command:
+    """Delivery agent - chooses a delivery option and asks for the address."""
+    # Invoke agent and return Command to end
+    print("Delivery Agent")
+    response = _invoke_agent(
+        delivery_agent,
+        DELIVERY_AGENT_PROMPT,
+        state["messages"],
+        "delivery_agent",
+    )
+    print("Delivery Agent: routed to __end__")
     return Command[str](goto="__end__", update={"messages": [response]})
