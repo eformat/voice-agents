@@ -4,13 +4,24 @@ This module provides specialized tools:
 - convert_text_to_speech: For text to speech agent
 """
 
+import os
+
 import requests
-from langchain.tools import tool
 import simpleaudio as sa
+from dotenv import load_dotenv
+from langchain.tools import tool
+
+load_dotenv()
+
+TTS_URL = os.getenv("TTS_URL", "TTS_URL")
+TTS_MODEL = os.getenv("TTS_MODEL", "TTS_MODEL")
+TTS_VOICE = os.getenv("TTS_VOICE", "TTS_VOICE")
+
 
 @tool
 def convert_text_to_speech(text: str):
     """Convert text to speech and play the generated audio."""
+    print("convert_text_to_speech tool called with text: ", text)
 
     if not text or not text.strip():
         return "No text provided for speech synthesis."
@@ -18,10 +29,10 @@ def convert_text_to_speech(text: str):
     if sa is None:
         return "Audio playback is unavailable because simpleaudio is not installed."
 
-    url = "BASE_URL"
+    url = TTS_URL
     payload = {
-        "model": "higgs-audio-v2-generation-3B-base",
-        "voice": "belinda",
+        "model": TTS_MODEL,
+        "voice": TTS_VOICE,
         "input": text,
         "response_format": "pcm",
     }

@@ -5,3 +5,4 @@ pandas>=2.3.3
 pre-commit>=4.4.0
 requests>=2.32.3
 simpleaudio-312compat>=0.1.4
+python-dotenv>=1.0.1

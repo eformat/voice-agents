@@ -2,39 +2,45 @@
 
 from __future__ import annotations
 
+import os
 from typing import Annotated, Literal
 
+from dotenv import load_dotenv
 from langchain.agents import create_agent
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from langchain_openai import ChatOpenAI
-
-llm = ChatOpenAI(
-    streaming=True,
-    model="MODEL_NAME",
-    temperature=0.2,
-    max_retries=2,
-    base_url="BASE_URL",
-    api_key="API_KEY"
-)
-
 from src.prompts import (
-    TEXT_TO_SPEECH_AGENT_PROMPT,
     SUPERVISOR_PROMPT,
+    TEXT_TO_SPEECH_AGENT_PROMPT,
 )
 from src.tools import (
     convert_text_to_speech,
 )
 
+load_dotenv()
+
+MODEL_NAME = os.getenv("MODEL_NAME", "MODEL_NAME")
+BASE_URL = os.getenv("BASE_URL", "BASE_URL")
+API_KEY = os.getenv("API_KEY", "API_KEY")
+
+llm = ChatOpenAI(
+    streaming=True,
+    model=MODEL_NAME,
+    temperature=0.2,
+    max_retries=2,
+    timeout=30,
+    base_url=BASE_URL,
+    api_key=API_KEY,
+)
+
 # ============================================================
 # Configuration
 # ============================================================
-MODEL_NAME = "MODEL_NAME"
 TEMPERATURE = 0.0
 
 # ============================================================
@@ -51,6 +57,7 @@ text_to_speech_agent = create_agent(
     model=llm,  # init_chat_model(MODEL_NAME, temperature=TEMPERATURE),
     tools=[convert_text_to_speech],  # Text to speech converter
 )
+
 
 # ============================================================
 # State and Models
@@ -69,6 +76,7 @@ class SupervisorDecision(BaseModel):
     next_agent: Literal["text_to_speech_agent", "none"]
     response: str = ""  # Direct response if no routing needed
 
+
 # ============================================================
 # Helper Functions
 # ============================================================
@@ -86,12 +94,13 @@ def _invoke_agent(agent, prompt: str, messages: list, agent_name: str):
     response_message.name = agent_name
     return response_message
 
+
 # ============================================================
 # Node Functions
 # ============================================================
 def supervisor_command_node(state: SupervisorState) -> Command:
     """Supervisor for Command routing - uses structured output."""
-    # Use structured output to get routing decision 
+    # Use structured output to get routing decision
     decision: SupervisorDecision = llm.with_structured_output(
         SupervisorDecision
     ).invoke([SystemMessage(content=SUPERVISOR_PROMPT)] + state["messages"])
@@ -112,15 +121,16 @@ def supervisor_command_node(state: SupervisorState) -> Command:
     print(f"Supervisor: Routing to {decision.next_agent}")
     return Command[str](goto=decision.next_agent, update=update)
 
+
 def text_to_speech_agent_node(state: SupervisorState) -> Command:
     """Text to speech specialist - converts text to speech."""
     # Invoke agent and return Command to end
-    print(f"Text to Speech Agent")
+    print("Text to Speech Agent")
     response = _invoke_agent(
         text_to_speech_agent,
         TEXT_TO_SPEECH_AGENT_PROMPT,
         state["messages"],
         "text_to_speech_agent",
     )
-    print(f"Text to Speech Agent: routed to __end__")
+    print("Text to Speech Agent: routed to __end__")
     return Command[str](goto="__end__", update={"messages": [response]})
