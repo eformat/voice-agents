@@ -37,12 +37,14 @@ def pause_listening() -> None:
     """Signal to pause background listening callbacks."""
     global _LISTENING_PAUSED
     _LISTENING_PAUSED = True
+    print("Listening paused")
 
 
 def resume_listening() -> None:
     """Signal to resume background listening callbacks."""
     global _LISTENING_PAUSED
     _LISTENING_PAUSED = False
+    print("Listening resumed")
 
 
 def is_listening_paused() -> bool:
@@ -68,6 +70,8 @@ def convert_text_to_speech(text: str):
     if sa is None:
         return "Audio playback is unavailable because simpleaudio is not installed."
 
+    pause_listening()
+
     url = TTS_URL
     payload = {
         "model": TTS_MODEL,
@@ -91,7 +95,6 @@ def convert_text_to_speech(text: str):
         pcm_audio += b"\x00"
 
     try:
-        pause_listening()
         play_obj = sa.play_buffer(
             pcm_audio, num_channels=1, bytes_per_sample=2, sample_rate=24000
         )
@@ -109,6 +112,8 @@ def convert_speech_to_text(audio: bytes):
     """Convert speech (audio bytes) to text using the Whisper endpoint."""
     if not audio:
         return "No audio provided for speech-to-text."
+
+    pause_listening()
 
     headers = {}
     if STT_TOKEN:
@@ -129,6 +134,8 @@ def convert_speech_to_text(audio: bytes):
         data = resp.json()
     except ValueError:
         return "Speech-to-text response was not valid JSON."
+    finally:
+        resume_listening()
 
     transcript = data.get("text") or data.get("transcription")
     if not transcript:
@@ -176,7 +183,9 @@ def choose_delivery(delivery_option: str) -> dict:
         estimated_delivery_time = "1 hour"
 
     result = {"estimated_delivery_time": estimated_delivery_time}
-    print(f"   → {result['estimated_delivery_time']} estimated delivery time")
+    print(
+        f"choose_delivery   → {result['estimated_delivery_time']} estimated delivery time"
+    )
     return result
 
 
@@ -200,4 +209,6 @@ def choose_pizza(pizza_type: str) -> dict:
     else:
         pizza_type = "Margherita"
 
-    return {"pizza_type": pizza_type}
+    result = {"pizza_type": pizza_type}
+    print(f"choose_pizza   → {result['pizza_type']} pizza type")
+    return result
