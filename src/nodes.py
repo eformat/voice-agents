@@ -23,10 +23,9 @@ from src.prompts import (
 from src.tools import (
     add_to_order,
     choose_delivery,
-    choose_pizza,
     convert_speech_to_text,
     convert_text_to_speech,
-    listen_for_user_speech,
+    get_pizza_type,
 )
 
 load_dotenv()
@@ -66,17 +65,15 @@ order_agent = create_agent(
         add_to_order,
         convert_speech_to_text,
         convert_text_to_speech,
-        listen_for_user_speech,
     ],  # Add to order tool
 )
 
 pizza_agent = create_agent(
     model=llm,
     tools=[
-        choose_pizza,
+        get_pizza_type,
         convert_speech_to_text,
         convert_text_to_speech,
-        listen_for_user_speech,
     ],  # Choose pizza tool
 )
 
@@ -86,7 +83,6 @@ delivery_agent = create_agent(
         choose_delivery,
         convert_speech_to_text,
         convert_text_to_speech,
-        listen_for_user_speech,
     ],  # Choose delivery tool
 )
 

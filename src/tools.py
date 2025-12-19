@@ -6,13 +6,11 @@ This module provides specialized tools:
 - listen_for_user_speech: Capture microphone audio and transcribe it
 """
 
-import io
 import os
-import wave
+import time
 
 import requests
 import simpleaudio as sa
-import sounddevice as sd
 from dotenv import load_dotenv
 from langchain.tools import tool
 
@@ -102,6 +100,7 @@ def convert_text_to_speech(text: str):
     except Exception as exc:
         return f"Failed to play audio: {exc}"
     finally:
+        time.sleep(0.75)  # Wait for the audio to finish playing
         resume_listening()
 
     return "Played generated speech."
@@ -145,34 +144,6 @@ def convert_speech_to_text(audio: bytes):
 
 
 @tool
-def listen_for_user_speech(duration: float | None = None) -> str:
-    """Record microphone audio for `duration` seconds and return transcription."""
-    record_seconds = duration or LISTEN_DURATION
-    try:
-        frames = sd.rec(
-            int(record_seconds * SAMPLE_RATE),
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-        )
-        sd.wait()
-    except Exception as exc:
-        return f"Failed to record audio: {exc}"
-
-    # Wrap PCM into WAV for the STT service
-    with io.BytesIO() as buffer:
-        with wave.open(buffer, "wb") as wav_file:
-            wav_file.setnchannels(CHANNELS)
-            wav_file.setsampwidth(SAMPLE_WIDTH)
-            wav_file.setframerate(SAMPLE_RATE)
-            wav_file.writeframes(frames.tobytes())
-        wav_bytes = buffer.getvalue()
-
-    transcript = convert_speech_to_text.func(wav_bytes)
-    return transcript
-
-
-@tool
 def choose_delivery(delivery_option: str) -> dict:
     """Choose a delivery option."""
     if delivery_option == "delivery":
@@ -190,25 +161,15 @@ def choose_delivery(delivery_option: str) -> dict:
 
 
 @tool
-def choose_pizza(pizza_type: str) -> dict:
-    """Choose a pizza type."""
-    if pizza_type == "margherita":
-        pizza_type = "Margherita"
-    elif pizza_type == "pepperoni":
-        pizza_type = "Pepperoni"
-    elif pizza_type == "vegetarian":
-        pizza_type = "Vegetarian"
-    elif pizza_type == "hawaiian":
-        pizza_type = "Hawaiian"
-    elif pizza_type == "meatlovers":
-        pizza_type = "Meat Lovers"
-    elif pizza_type == "bbq_chicken":
-        pizza_type = "BBQ Chicken"
-    elif pizza_type == "spinach_and_mushroom":
-        pizza_type = "Spinach and Mushroom"
-    else:
-        pizza_type = "Margherita"
-
-    result = {"pizza_type": pizza_type}
-    print(f"choose_pizza   → {result['pizza_type']} pizza type")
-    return result
+def get_pizza_type(query: str) -> dict:
+    """Supported pizza types."""
+    pizza_type_dictionary = {
+        "margherita": "Margherita",
+        "pepperoni": "Pepperoni",
+        "vegetarian": "Vegetarian",
+        "hawaiian": "Hawaiian",
+        "meatlovers": "Meat Lovers",
+        "bbq_chicken": "BBQ Chicken",
+        "spinach_and_mushroom": "Spinach and Mushroom",
+    }
+    return pizza_type_dictionary
