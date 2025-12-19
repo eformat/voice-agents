@@ -24,7 +24,6 @@ STT_URL = os.getenv("STT_URL", "STT_URL")
 STT_MODEL = os.getenv("STT_MODEL", "STT_MODEL")
 STT_TOKEN = os.getenv("STT_TOKEN", "STT_TOKEN")
 
-LISTEN_DURATION = float(os.getenv("LISTEN_DURATION", "5.0"))
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH = 2  # bytes (int16)
