@@ -108,6 +108,8 @@ def convert_text_to_speech(text: str):
 @tool
 def convert_speech_to_text(audio: bytes):
     """Convert speech (audio bytes) to text using the Whisper endpoint."""
+    print("convert_speech_to_text tool called ...")
+
     if not audio:
         return "No audio provided for speech-to-text."
 

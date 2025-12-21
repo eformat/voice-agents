@@ -16,7 +16,7 @@ Route to the pizza agent if the user asks for a pizza.
 Route to the order agent if the user asks to add a topping.
 Route to the delivery agent if the user asks to choose a delivery option.
 
-Use "none" for greetings, non-pizza topics, or unclear queries (provide polite response).
+Use "none" for greetings, non-pizza topics, or unclear queries (provide polite response). Wait for the user to speak again before responding.
 
 Based on the conversation history, make your decision."""
 
@@ -26,6 +26,8 @@ PIZZA_AGENT_PROMPT = """You are a voice agent that helps the user choose a pizza
 Your tasks:
 1. Always respond with speech and ask the user for a pizza type if they haven't chosen one yet.
 2. Extract any pizza type from the user's query.
+
+Wait for the user to speak again before responding.
 
 # Context: {context}
 Based on the conversation history, provide your response:"""
@@ -37,6 +39,8 @@ Your tasks:
 1. Always respond with speech and ask the user for an item to add to the order if they haven't added anything yet.
 2. Keep a running total of the order
 
+Wait for the user to speak again before responding.
+
 # Context: {context}
 Based on the conversation history, provide your response:"""
 
@@ -47,6 +51,8 @@ Your tasks:
 1.  Always respond with speech and ask the user for a delivery option if they haven't chosen one yet.
 2. Ask for the address if they haven't provided one yet.
 3. Give an estimated delivery time
+
+Wait for the user to speak again before responding.
 
 # Context: {context}
 Based on the conversation history, provide your response:"""

@@ -157,20 +157,6 @@ def supervisor_command_node(state: SupervisorState) -> Command:
     return Command[str](goto=decision.next_agent, update=update)
 
 
-def order_agent_node(state: SupervisorState) -> Command:
-    """Text to speech specialist - converts text to speech."""
-    # Invoke agent and return Command to end
-    print("Order Agent")
-    response = _invoke_agent(
-        order_agent,
-        ORDER_AGENT_PROMPT,
-        state["messages"],
-        "order_agent",
-    )
-    print("Order Agent: routed to __end__")
-    return Command[str](goto="__end__", update={"messages": [response]})
-
-
 def pizza_agent_node(state: SupervisorState) -> Command:
     """Pizza agent - chooses a pizza."""
     # Invoke agent and return Command to end
@@ -182,7 +168,21 @@ def pizza_agent_node(state: SupervisorState) -> Command:
         "pizza_agent",
     )
     print("Pizza Agent: routed to __end__")
-    return Command[str](goto="__end__", update={"messages": [response]})
+    return Command[str](goto="order_agent", update={"messages": [response]})
+
+
+def order_agent_node(state: SupervisorState) -> Command:
+    """Text to speech specialist - converts text to speech."""
+    # Invoke agent and return Command to end
+    print("Order Agent")
+    response = _invoke_agent(
+        order_agent,
+        ORDER_AGENT_PROMPT,
+        state["messages"],
+        "order_agent",
+    )
+    print("Order Agent: routed to __end__")
+    return Command[str](goto="delivery_agent", update={"messages": [response]})
 
 
 def delivery_agent_node(state: SupervisorState) -> Command:
