@@ -19,10 +19,7 @@ import json
 import uuid
 from typing import Any
 
-try:
-    import websockets
-except ImportError:  # pragma: no cover
-    websockets = None
+import websockets
 from langchain_core.globals import set_debug
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
@@ -161,7 +158,7 @@ async def handler(ws):
             await ws.send(json.dumps({"type": "error", "error": str(exc)}))
 
 
-async def main(host: str = "127.0.0.1", port: int = 8765):
+async def main(host: str = "0.0.0.0", port: int = 8765):
     """Main function to start the WS server."""
     if websockets is None:
         raise RuntimeError(
