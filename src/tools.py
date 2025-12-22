@@ -6,8 +6,11 @@ This module provides specialized tools:
 - listen_for_user_speech: Capture microphone audio and transcribe it
 """
 
+import base64
+import io
 import os
 import time
+import wave
 
 import requests
 import simpleaudio as sa
@@ -19,6 +22,8 @@ load_dotenv()
 TTS_URL = os.getenv("TTS_URL", "TTS_URL")
 TTS_MODEL = os.getenv("TTS_MODEL", "TTS_MODEL")
 TTS_VOICE = os.getenv("TTS_VOICE", "TTS_VOICE")
+PLAY_AUDIO = os.getenv("PLAY_AUDIO", "0").lower() in ("1", "true", "yes", "y")
+TTS_SAMPLE_RATE = int(os.getenv("TTS_SAMPLE_RATE", "24000"))
 
 STT_URL = os.getenv("STT_URL", "STT_URL")
 STT_MODEL = os.getenv("STT_MODEL", "STT_MODEL")
@@ -66,6 +71,11 @@ def convert_text_to_speech(text: str = ""):
         # Returning a string avoids crashing the graph/tool pipeline.
         return "No text provided for speech synthesis (empty tool call)."
 
+    if not PLAY_AUDIO:
+        # In cloud/container environments, audio playback is not possible.
+        # We keep the tool callable but do not attempt to play.
+        return "Audio playback disabled (PLAY_AUDIO=0)."
+
     if sa is None:
         return "Audio playback is unavailable because simpleaudio is not installed."
 
@@ -95,7 +105,7 @@ def convert_text_to_speech(text: str = ""):
 
     try:
         play_obj = sa.play_buffer(
-            pcm_audio, num_channels=1, bytes_per_sample=2, sample_rate=24000
+            pcm_audio, num_channels=1, bytes_per_sample=2, sample_rate=TTS_SAMPLE_RATE
         )
         play_obj.wait_done()
     except Exception as exc:
@@ -105,6 +115,40 @@ def convert_text_to_speech(text: str = ""):
         resume_listening()
 
     return "Played generated speech."
+
+
+def generate_tts_wav_b64(text: str) -> dict:
+    """Generate TTS audio as WAV (base64), suitable for returning to a browser."""
+    if not text or not text.strip():
+        return {"audio_b64": "", "format": "wav", "sample_rate": TTS_SAMPLE_RATE}
+
+    url = TTS_URL
+    payload = {
+        "model": TTS_MODEL,
+        "voice": TTS_VOICE,
+        "input": text,
+        "response_format": "pcm",
+    }
+
+    response = requests.post(url, json=payload, timeout=60)
+    response.raise_for_status()
+    pcm_audio = response.content
+    if len(pcm_audio) % 2 != 0:
+        pcm_audio += b"\x00"
+
+    with io.BytesIO() as buf:
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(TTS_SAMPLE_RATE)
+            wf.writeframes(pcm_audio)
+        wav_bytes = buf.getvalue()
+
+    return {
+        "audio_b64": base64.b64encode(wav_bytes).decode("ascii"),
+        "format": "wav",
+        "sample_rate": TTS_SAMPLE_RATE,
+    }
 
 
 @tool

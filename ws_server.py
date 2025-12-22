@@ -10,12 +10,14 @@ Protocol (server -> client):
   - JSON text message:
       {"type":"transcript","text":"..."}
       {"type":"graph_result","pizza_type":"...","messages":[{"role":"...","content":"..."}]}
+      {"type":"tts_audio","format":"wav","sample_rate":24000,"audio_b64":"..."}
       {"type":"error","error":"..."}
 """
 
 import asyncio
 import base64
 import json
+import re
 import uuid
 from typing import Any
 
@@ -25,7 +27,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from src.graph import build_graph
-from src.tools import convert_speech_to_text
+from src.tools import convert_speech_to_text, generate_tts_wav_b64
 
 set_debug(True)
 
@@ -52,9 +54,43 @@ def _interrupt_values(result: dict) -> list[Any]:
     return values
 
 
+_TTS_CALL_RE = re.compile(r'convert_text_to_speech\\(.*?text\\s*=\\s*"(.*?)".*?\\)')
+
+
+def _select_tts_text(result: dict) -> str:
+    """Pick a reasonable text snippet from the graph result to speak."""
+    ints = _interrupt_values(result)
+    if ints and isinstance(ints[0], dict):
+        prompt = (ints[0].get("prompt") or "").strip()
+        m = _TTS_CALL_RE.search(prompt)
+        if m:
+            return m.group(1).strip()
+        return prompt
+
+    for m in reversed(result.get("messages", []) or []):
+        role = getattr(m, "name", None) or getattr(m, "type", "")
+        content = (getattr(m, "content", "") or "").strip()
+        if not content:
+            continue
+        if content.startswith("Routing to"):
+            continue
+        if role == "human":
+            continue
+        mm = _TTS_CALL_RE.search(content)
+        if mm:
+            return mm.group(1).strip()
+        return content
+    return ""
+
+
 async def _invoke_graph(inputs: Any, config: dict) -> dict:
     """Invoke graph in a thread to avoid blocking the WS event loop."""
     return await asyncio.to_thread(GRAPH.invoke, inputs, config)
+
+
+async def _tts_payload(text: str) -> dict:
+    """Generate TTS payload without blocking the WS event loop."""
+    return await asyncio.to_thread(generate_tts_wav_b64, text)
 
 
 async def handler(ws):
@@ -113,6 +149,19 @@ async def handler(ws):
                         }
                     )
                 )
+                try:
+                    speak_text = _select_tts_text(result)
+                    tts = await _tts_payload(speak_text)
+                    if tts.get("audio_b64"):
+                        print(
+                            f"[ws] send tts_audio (len={len(tts['audio_b64'])})",
+                            flush=True,
+                        )
+                        await ws.send(json.dumps({"type": "tts_audio", **tts}))
+                except Exception as exc:
+                    await ws.send(
+                        json.dumps({"type": "error", "error": f"TTS failed: {exc}"})
+                    )
             elif msg_type == "text":
                 text = data.get("text", "")
                 print(f"[ws] text: {text!r}", flush=True)
@@ -149,6 +198,19 @@ async def handler(ws):
                         }
                     )
                 )
+                try:
+                    speak_text = _select_tts_text(result)
+                    tts = await _tts_payload(speak_text)
+                    if tts.get("audio_b64"):
+                        print(
+                            f"[ws] send tts_audio (len={len(tts['audio_b64'])})",
+                            flush=True,
+                        )
+                        await ws.send(json.dumps({"type": "tts_audio", **tts}))
+                except Exception as exc:
+                    await ws.send(
+                        json.dumps({"type": "error", "error": f"TTS failed: {exc}"})
+                    )
             else:
                 await ws.send(
                     json.dumps({"type": "error", "error": f"Unknown type: {msg_type}"})

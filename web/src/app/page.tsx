@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 
 type WsMsg =
   | { type: "transcript"; text: string }
+  | { type: "tts_audio"; format: "wav"; sample_rate: number; audio_b64: string }
   | {
       type: "graph_result";
       pizza_type: string;
@@ -51,6 +52,12 @@ async function blobToBase64(blob: Blob): Promise<string> {
   return btoa(binary);
 }
 
+async function base64ToBlob(b64: string, mime: string): Promise<Blob> {
+  // Avoid `atob` size limits by using a data URL + fetch.
+  const res = await fetch(`data:${mime};base64,${b64}`);
+  return await res.blob();
+}
+
 export default function Home() {
   const [wsUrl, setWsUrl] = useState("ws://127.0.0.1:8765");
   const [connected, setConnected] = useState(false);
@@ -60,6 +67,8 @@ export default function Home() {
   const [messages, setMessages] = useState<Array<{ role: string; content: string }>>([]);
   const [error, setError] = useState<string>("");
   const [textToSend, setTextToSend] = useState<string>("Can I order a pepperoni pizza?");
+  const [audioUrl, setAudioUrl] = useState<string>("");
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -86,6 +95,18 @@ export default function Home() {
       try {
         const msg = JSON.parse(evt.data) as WsMsg;
         if (msg.type === "transcript") setTranscript(msg.text);
+        if (msg.type === "tts_audio") {
+          (async () => {
+            try {
+              const blob = await base64ToBlob(msg.audio_b64, "audio/wav");
+              const url = URL.createObjectURL(blob);
+              setAudioUrl(url);
+              setTimeout(() => audioRef.current?.play().catch(() => {}), 0);
+            } catch (e: any) {
+              setError(e?.message || "Failed to decode/play TTS audio");
+            }
+          })();
+        }
         if (msg.type === "graph_result") {
           setPizzaType(msg.pizza_type);
           setMessages(msg.messages);
@@ -97,8 +118,8 @@ export default function Home() {
           }
         }
         if (msg.type === "error") setError(msg.error);
-      } catch {
-        // ignore
+      } catch (e) {
+        console.error("WS message handling failed:", e);
       }
     };
   };
@@ -193,6 +214,17 @@ export default function Home() {
     };
   }, []);
 
+  // Revoke old blob URLs to avoid leaks (but don't tear down the WS connection).
+  const prevAudioUrlRef = useRef<string>("");
+  useEffect(() => {
+    const prev = prevAudioUrlRef.current;
+    if (prev && prev !== audioUrl) URL.revokeObjectURL(prev);
+    prevAudioUrlRef.current = audioUrl;
+    return () => {
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+    };
+  }, [audioUrl]);
+
   const sendText = () => {
     setError("");
     if (!connected || !wsRef.current) {
@@ -273,6 +305,11 @@ export default function Home() {
               {error}
             </div>
           ) : null}
+
+          <div className="pt-2">
+            <label className="text-sm text-zinc-400">Playback</label>
+            <audio ref={audioRef} src={audioUrl || undefined} controls className="w-full mt-2" />
+          </div>
         </section>
 
         <section className="rounded-xl border border-zinc-800 p-5 space-y-4">
