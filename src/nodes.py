@@ -7,10 +7,10 @@ from typing import Annotated, Literal
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph.message import add_messages
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
@@ -167,8 +167,10 @@ def pizza_agent_node(state: SupervisorState) -> Command:
         state["messages"],
         "pizza_agent",
     )
-    print("Pizza Agent: routed to __end__")
-    return Command[str](goto="order_agent", update={"messages": [response]})
+    print("Pizza Agent: routed to wait_for_user_after_pizza")
+    return Command[str](
+        goto="wait_for_user_after_pizza", update={"messages": [response]}
+    )
 
 
 def order_agent_node(state: SupervisorState) -> Command:
@@ -181,8 +183,10 @@ def order_agent_node(state: SupervisorState) -> Command:
         state["messages"],
         "order_agent",
     )
-    print("Order Agent: routed to __end__")
-    return Command[str](goto="delivery_agent", update={"messages": [response]})
+    print("Order Agent: routed to wait_for_user_after_order")
+    return Command[str](
+        goto="wait_for_user_after_order", update={"messages": [response]}
+    )
 
 
 def delivery_agent_node(state: SupervisorState) -> Command:
@@ -195,5 +199,41 @@ def delivery_agent_node(state: SupervisorState) -> Command:
         state["messages"],
         "delivery_agent",
     )
-    print("Delivery Agent: routed to __end__")
-    return Command[str](goto="__end__", update={"messages": [response]})
+    print("Delivery Agent: routed to wait_for_user_after_delivery")
+    return Command[str](
+        goto="wait_for_user_after_delivery", update={"messages": [response]}
+    )
+
+
+def _interrupt_payload(state: SupervisorState, agent: str) -> dict:
+    """Create a JSON-serializable interrupt payload for the UI."""
+    last = state.get("messages", [])[-1] if state.get("messages") else None
+    return {
+        "agent": agent,
+        "prompt": getattr(last, "content", "") if last else "",
+        "pizza_type": state.get("pizza_type", ""),
+    }
+
+
+def wait_for_user_after_pizza(state: SupervisorState) -> Command:
+    """Interrupt after pizza agent, waiting for user's next input."""
+    user_text = interrupt(_interrupt_payload(state, "pizza_agent"))
+    return Command(
+        goto="supervisor", update={"messages": [HumanMessage(content=str(user_text))]}
+    )
+
+
+def wait_for_user_after_order(state: SupervisorState) -> Command:
+    """Interrupt after order agent, waiting for user's next input."""
+    user_text = interrupt(_interrupt_payload(state, "order_agent"))
+    return Command(
+        goto="supervisor", update={"messages": [HumanMessage(content=str(user_text))]}
+    )
+
+
+def wait_for_user_after_delivery(state: SupervisorState) -> Command:
+    """Interrupt after delivery agent, waiting for user's next input."""
+    user_text = interrupt(_interrupt_payload(state, "delivery_agent"))
+    return Command(
+        goto="supervisor", update={"messages": [HumanMessage(content=str(user_text))]}
+    )

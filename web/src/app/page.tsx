@@ -5,7 +5,12 @@ import { useEffect, useRef, useState } from "react";
 
 type WsMsg =
   | { type: "transcript"; text: string }
-  | { type: "graph_result"; pizza_type: string; messages: { role: string; content: string }[] }
+  | {
+      type: "graph_result";
+      pizza_type: string;
+      messages: { role: string; content: string }[];
+      interrupt?: any;
+    }
   | { type: "error"; error: string };
 
 function pcmToWavBlob(pcm: Int16Array, sampleRate: number): Blob {
@@ -84,6 +89,12 @@ export default function Home() {
         if (msg.type === "graph_result") {
           setPizzaType(msg.pizza_type);
           setMessages(msg.messages);
+          if (msg.interrupt) {
+            setMessages((prev) => [
+              ...prev,
+              { role: "interrupt", content: JSON.stringify(msg.interrupt) },
+            ]);
+          }
         }
         if (msg.type === "error") setError(msg.error);
       } catch {

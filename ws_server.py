@@ -16,6 +16,7 @@ Protocol (server -> client):
 import asyncio
 import base64
 import json
+import uuid
 from typing import Any
 
 try:
@@ -24,6 +25,7 @@ except ImportError:  # pragma: no cover
     websockets = None
 from langchain_core.globals import set_debug
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 
 from src.graph import build_graph
 from src.tools import convert_speech_to_text
@@ -46,14 +48,23 @@ def _safe_messages(result: dict) -> list[dict[str, str]]:
 GRAPH = build_graph()
 
 
-async def _invoke_graph(state: dict) -> dict:
+def _interrupt_values(result: dict) -> list[Any]:
+    values: list[Any] = []
+    for item in result.get("__interrupt__", []) or []:
+        values.append(getattr(item, "value", item))
+    return values
+
+
+async def _invoke_graph(inputs: Any, config: dict) -> dict:
     """Invoke graph in a thread to avoid blocking the WS event loop."""
-    return await asyncio.to_thread(GRAPH.invoke, state)
+    return await asyncio.to_thread(GRAPH.invoke, inputs, config)
 
 
 async def handler(ws):
     """Web Socket handler. Per-client conversation state (fresh for each WS connection)."""
-    state: dict[str, Any] = {"messages": []}
+    thread_id = f"ws-{uuid.uuid4()}"
+    config = {"configurable": {"thread_id": thread_id}}
+    awaiting_resume = False
     async for raw in ws:
         print(f"[ws] recv: {raw[:200]}", flush=True)
         try:
@@ -72,12 +83,15 @@ async def handler(ws):
                 transcript = convert_speech_to_text.func(audio_bytes)
                 print(f"[ws] transcript: {transcript!r}", flush=True)
                 await ws.send(json.dumps({"type": "transcript", "text": transcript}))
-                # Append human message into state and invoke graph with full history.
-                state["messages"] = list(state.get("messages", [])) + [
-                    HumanMessage(content=transcript)
-                ]
                 try:
-                    result = await asyncio.wait_for(_invoke_graph(state), timeout=45)
+                    inputs = (
+                        Command(resume=transcript)
+                        if awaiting_resume
+                        else {"messages": [HumanMessage(content=transcript)]}
+                    )
+                    result = await asyncio.wait_for(
+                        _invoke_graph(inputs, config), timeout=45
+                    )
                 except asyncio.TimeoutError:
                     await ws.send(
                         json.dumps(
@@ -88,14 +102,17 @@ async def handler(ws):
                         )
                     )
                     continue
-                # Persist returned state for next turn.
-                state = result
+                interrupt_values = _interrupt_values(result)
+                awaiting_resume = bool(interrupt_values)
                 await ws.send(
                     json.dumps(
                         {
                             "type": "graph_result",
                             "pizza_type": result.get("pizza_type", ""),
                             "messages": _safe_messages(result),
+                            "interrupt": interrupt_values[0]
+                            if interrupt_values
+                            else None,
                         }
                     )
                 )
@@ -103,10 +120,14 @@ async def handler(ws):
                 text = data.get("text", "")
                 print(f"[ws] text: {text!r}", flush=True)
                 try:
-                    state["messages"] = list(state.get("messages", [])) + [
-                        HumanMessage(content=text)
-                    ]
-                    result = await asyncio.wait_for(_invoke_graph(state), timeout=45)
+                    inputs = (
+                        Command(resume=text)
+                        if awaiting_resume
+                        else {"messages": [HumanMessage(content=text)]}
+                    )
+                    result = await asyncio.wait_for(
+                        _invoke_graph(inputs, config), timeout=45
+                    )
                 except asyncio.TimeoutError:
                     await ws.send(
                         json.dumps(
@@ -117,13 +138,17 @@ async def handler(ws):
                         )
                     )
                     continue
-                state = result
+                interrupt_values = _interrupt_values(result)
+                awaiting_resume = bool(interrupt_values)
                 await ws.send(
                     json.dumps(
                         {
                             "type": "graph_result",
                             "pizza_type": result.get("pizza_type", ""),
                             "messages": _safe_messages(result),
+                            "interrupt": interrupt_values[0]
+                            if interrupt_values
+                            else None,
                         }
                     )
                 )

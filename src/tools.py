@@ -57,12 +57,14 @@ def add_to_order(item: str) -> str:
 
 
 @tool
-def convert_text_to_speech(text: str):
+def convert_text_to_speech(text: str = ""):
     """Convert text to speech and play the generated audio."""
     print("convert_text_to_speech tool called with text: ", text)
 
     if not text or not text.strip():
-        return "No text provided for speech synthesis."
+        # IMPORTANT: allow tool calls with missing args (LLM sometimes emits {}).
+        # Returning a string avoids crashing the graph/tool pipeline.
+        return "No text provided for speech synthesis (empty tool call)."
 
     if sa is None:
         return "Audio playback is unavailable because simpleaudio is not installed."
@@ -78,7 +80,7 @@ def convert_text_to_speech(text: str):
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=30)
+        response = requests.post(url, json=payload, timeout=60)
         response.raise_for_status()
     except requests.RequestException as exc:
         return f"Failed to generate audio: {exc}"
