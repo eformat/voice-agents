@@ -305,11 +305,6 @@ export default function Home() {
               {error}
             </div>
           ) : null}
-
-          <div className="pt-2">
-            <label className="text-sm text-zinc-400">Playback</label>
-            <audio ref={audioRef} src={audioUrl || undefined} controls className="w-full mt-2" />
-          </div>
         </section>
 
         <section className="rounded-xl border border-zinc-800 p-5 space-y-4">
@@ -359,6 +354,11 @@ export default function Home() {
             <h2 className="font-semibold">Extracted State</h2>
             <div className="text-sm text-zinc-200">pizza_type: {pizzaType || "(not extracted)"}</div>
           </div>
+        </section>
+
+        <section className="rounded-xl border border-zinc-800 p-5 space-y-2">
+          <h2 className="font-semibold">Playback</h2>
+          <audio ref={audioRef} src={audioUrl || undefined} controls className="w-full" />
         </section>
 
         <section className="rounded-xl border border-zinc-800 p-5 space-y-3">
