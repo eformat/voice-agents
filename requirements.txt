@@ -11,3 +11,4 @@ SpeechRecognition>=3.10.4
 pyaudio>=0.2.14
 websockets>=12.0
 soundfile>=0.13.1
+openai>=1.0.0

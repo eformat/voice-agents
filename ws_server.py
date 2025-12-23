@@ -5,11 +5,16 @@ Protocol (client -> server):
   - JSON text message:
       {"type":"audio_wav_b64","audio_b64":"...base64..."}
       {"type":"text","text":"..."}
+      {"type":"tts_text","text":"..."}  # test streaming TTS only (no graph)
 
 Protocol (server -> client):
   - JSON text message:
       {"type":"transcript","text":"..."}
       {"type":"graph_result","pizza_type":"...","messages":[{"role":"...","content":"..."}]}
+      {"type":"tts_begin","format":"pcm_s16le","sample_rate":24000}
+      {"type":"tts_chunk","audio_b64":"...","seq":0}
+      {"type":"tts_end"}
+      # (fallback)
       {"type":"tts_audio","format":"wav","sample_rate":24000,"audio_b64":"..."}
       {"type":"error","error":"..."}
 """
@@ -18,6 +23,7 @@ import asyncio
 import base64
 import json
 import re
+import threading
 import uuid
 from typing import Any
 
@@ -25,9 +31,14 @@ import websockets
 from langchain_core.globals import set_debug
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
+from websockets.exceptions import ConnectionClosed
 
 from src.graph import build_graph
-from src.tools import convert_speech_to_text, generate_tts_wav_b64
+from src.tools import (
+    convert_speech_to_text,
+    generate_tts_wav_b64,
+    stream_tts_pcm_chunks,
+)
 
 set_debug(True)
 
@@ -93,6 +104,55 @@ async def _tts_payload(text: str) -> dict:
     return await asyncio.to_thread(generate_tts_wav_b64, text)
 
 
+async def _tts_stream(ws, text: str) -> None:
+    """Stream TTS PCM audio chunks to the client over WS."""
+    if not text or not text.strip():
+        return
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+    def _producer() -> None:
+        try:
+            for chunk in stream_tts_pcm_chunks(text):
+                loop.call_soon_threadsafe(q.put_nowait, chunk)
+        except Exception as exc:
+            # Surface error as special marker; consumer will emit error.
+            loop.call_soon_threadsafe(
+                q.put_nowait, b"__ERROR__" + str(exc).encode("utf-8")
+            )
+        finally:
+            loop.call_soon_threadsafe(q.put_nowait, None)
+
+    threading.Thread(target=_producer, daemon=True).start()
+
+    await ws.send(
+        json.dumps({"type": "tts_begin", "format": "pcm_s16le", "sample_rate": 24000})
+    )
+    seq = 0
+    while True:
+        item = await q.get()
+        if item is None:
+            break
+        if item.startswith(b"__ERROR__"):
+            err = item[len(b"__ERROR__") :].decode("utf-8", errors="replace")
+            await ws.send(
+                json.dumps({"type": "error", "error": f"TTS stream failed: {err}"})
+            )
+            await ws.send(json.dumps({"type": "tts_end"}))
+            return
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "tts_chunk",
+                    "seq": seq,
+                    "audio_b64": base64.b64encode(item).decode("ascii"),
+                }
+            )
+        )
+        seq += 1
+    await ws.send(json.dumps({"type": "tts_end"}))
+
+
 async def handler(ws):
     """Web Socket handler. Per-client conversation state (fresh for each WS connection)."""
     thread_id = f"ws-{uuid.uuid4()}"
@@ -149,19 +209,19 @@ async def handler(ws):
                         }
                     )
                 )
+                speak_text = _select_tts_text(result)
                 try:
-                    speak_text = _select_tts_text(result)
-                    tts = await _tts_payload(speak_text)
-                    if tts.get("audio_b64"):
-                        print(
-                            f"[ws] send tts_audio (len={len(tts['audio_b64'])})",
-                            flush=True,
-                        )
-                        await ws.send(json.dumps({"type": "tts_audio", **tts}))
+                    await _tts_stream(ws, speak_text)
                 except Exception as exc:
-                    await ws.send(
-                        json.dumps({"type": "error", "error": f"TTS failed: {exc}"})
-                    )
+                    # Fallback: single WAV blob
+                    try:
+                        tts = await _tts_payload(speak_text)
+                        if tts.get("audio_b64"):
+                            await ws.send(json.dumps({"type": "tts_audio", **tts}))
+                    except Exception:
+                        await ws.send(
+                            json.dumps({"type": "error", "error": f"TTS failed: {exc}"})
+                        )
             elif msg_type == "text":
                 text = data.get("text", "")
                 print(f"[ws] text: {text!r}", flush=True)
@@ -198,26 +258,48 @@ async def handler(ws):
                         }
                     )
                 )
+                speak_text = _select_tts_text(result)
                 try:
-                    speak_text = _select_tts_text(result)
-                    tts = await _tts_payload(speak_text)
-                    if tts.get("audio_b64"):
-                        print(
-                            f"[ws] send tts_audio (len={len(tts['audio_b64'])})",
-                            flush=True,
+                    await _tts_stream(ws, speak_text)
+                except Exception as exc:
+                    # Fallback: single WAV blob
+                    try:
+                        tts = await _tts_payload(speak_text)
+                        if tts.get("audio_b64"):
+                            await ws.send(json.dumps({"type": "tts_audio", **tts}))
+                    except Exception:
+                        await ws.send(
+                            json.dumps({"type": "error", "error": f"TTS failed: {exc}"})
                         )
-                        await ws.send(json.dumps({"type": "tts_audio", **tts}))
+            elif msg_type == "tts_text":
+                # Debug / testing endpoint: stream TTS audio directly without invoking the graph.
+                speak_text = (data.get("text") or "").strip()
+                if not speak_text:
+                    await ws.send(
+                        json.dumps({"type": "error", "error": "No text provided"})
+                    )
+                    continue
+                try:
+                    await _tts_stream(ws, speak_text)
                 except Exception as exc:
                     await ws.send(
-                        json.dumps({"type": "error", "error": f"TTS failed: {exc}"})
+                        json.dumps(
+                            {"type": "error", "error": f"TTS stream failed: {exc}"}
+                        )
                     )
             else:
                 await ws.send(
                     json.dumps({"type": "error", "error": f"Unknown type: {msg_type}"})
                 )
+        except ConnectionClosed:
+            # Client disconnected; nothing more to do for this connection.
+            break
         except Exception as exc:
             print(f"[ws] error: {exc}", flush=True)
-            await ws.send(json.dumps({"type": "error", "error": str(exc)}))
+            try:
+                await ws.send(json.dumps({"type": "error", "error": str(exc)}))
+            except ConnectionClosed:
+                break
 
 
 async def main(host: str = "0.0.0.0", port: int = 8765):

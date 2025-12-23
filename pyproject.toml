@@ -17,6 +17,7 @@ dependencies = [
     "SpeechRecognition>=3.10.4",
     "websockets>=12.0",
     "soundfile>=0.13.1",
+    "openai>=1.0.0",
 ]
 
 [project.optional-dependencies]

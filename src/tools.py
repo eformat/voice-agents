@@ -11,6 +11,8 @@ import io
 import os
 import time
 import wave
+from pathlib import Path
+from typing import Iterator
 
 import requests
 import simpleaudio as sa
@@ -24,6 +26,11 @@ TTS_MODEL = os.getenv("TTS_MODEL", "TTS_MODEL")
 TTS_VOICE = os.getenv("TTS_VOICE", "TTS_VOICE")
 PLAY_AUDIO = os.getenv("PLAY_AUDIO", "0").lower() in ("1", "true", "yes", "y")
 TTS_SAMPLE_RATE = int(os.getenv("TTS_SAMPLE_RATE", "24000"))
+TTS_API_KEY = os.getenv("TTS_API_KEY", os.getenv("API_KEY", ""))
+TTS_AUDIO_CHUNK_SIZE = int(os.getenv("TTS_AUDIO_CHUNK_SIZE", "20"))
+TTS_TIMEOUT_S = float(os.getenv("TTS_TIMEOUT_S", "30"))
+TTS_VOICE_WAV = os.getenv("TTS_VOICE_WAV", "")  # optional override
+TTS_VOICE_TXT = os.getenv("TTS_VOICE_TXT", "")  # optional override
 
 STT_URL = os.getenv("STT_URL", "STT_URL")
 STT_MODEL = os.getenv("STT_MODEL", "STT_MODEL")
@@ -149,6 +156,109 @@ def generate_tts_wav_b64(text: str) -> dict:
         "format": "wav",
         "sample_rate": TTS_SAMPLE_RATE,
     }
+
+
+def stream_tts_pcm_chunks(text: str) -> Iterator[bytes]:
+    """Stream TTS audio as raw PCM int16 chunks (s16le).
+
+    This follows the `test-tts-stream.py` approach for OpenAI-compatible audio streaming.
+    Expects `TTS_URL` to be an OpenAI-compatible base URL ending in `/v1` (or similar).
+    """
+    if not text or not text.strip():
+        return
+
+    if not (TTS_URL.startswith("http://") or TTS_URL.startswith("https://")):
+        raise RuntimeError(
+            f"TTS_URL must be an OpenAI-compatible base URL (got {TTS_URL!r})."
+        )
+
+    try:
+        from openai import OpenAI
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(
+            "Missing dependency: openai. Install with `pip install openai`."
+        ) from exc
+
+    voice_mode = (TTS_VOICE or "").strip().lower()
+
+    def _encode_b64_file(p: Path) -> str:
+        return base64.b64encode(p.read_bytes()).decode("utf-8")
+
+    # Voice cloning (Higgs): condition the chat with a reference audio + its transcript,
+    # matching the pattern from `test-tts-stream.py`.
+    use_voice_clone = voice_mode in {"belinda", "clone", "voice_clone"}
+    voice_wav = (
+        Path(TTS_VOICE_WAV)
+        if TTS_VOICE_WAV
+        else Path(__file__).resolve().parents[1] / "belinda.wav"
+    )
+    voice_txt = (
+        Path(TTS_VOICE_TXT)
+        if TTS_VOICE_TXT
+        else Path(__file__).resolve().parents[1] / "belinda.txt"
+    )
+
+    client = OpenAI(
+        api_key=TTS_API_KEY or "fake",
+        base_url=TTS_URL,
+        timeout=TTS_TIMEOUT_S,
+        max_retries=1,
+    )
+
+    if use_voice_clone:
+        if not voice_wav.exists() or not voice_txt.exists():
+            raise RuntimeError(
+                f"Voice clone requested (TTS_VOICE={TTS_VOICE!r}) but files missing: "
+                f"{voice_wav} / {voice_txt}"
+            )
+        audio_text = voice_txt.read_text(encoding="utf-8", errors="replace")
+        audio_b64 = _encode_b64_file(voice_wav)
+        messages = [
+            {"role": "user", "content": audio_text},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": audio_b64, "format": "wav"},
+                    }
+                ],
+            },
+            {"role": "user", "content": text},
+        ]
+    else:
+        # Plain streamed TTS prompt (no voice conditioning).
+        system_prompt = (
+            "Generate audio following instruction.\n\n"
+            "<|scene_desc_start|>\n"
+            "Audio is recorded from a quiet room.\n"
+            "<|scene_desc_end|>"
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
+        ]
+
+    chat_completion = client.chat.completions.create(
+        messages=messages,
+        model=TTS_MODEL,
+        stream=True,
+        modalities=["text", "audio"],
+        temperature=1.0,
+        top_p=0.95,
+        extra_body={"top_k": 50, "audio_chunk_size": TTS_AUDIO_CHUNK_SIZE},
+        stop=["<|eot_id|>", "<|end_of_text|>", "<|audio_eos|>"],
+    )
+
+    for chunk in chat_completion:
+        if (
+            chunk.choices
+            and hasattr(chunk.choices[0].delta, "audio")
+            and chunk.choices[0].delta.audio
+        ):
+            audio_b64 = chunk.choices[0].delta.audio.get("data")
+            if audio_b64:
+                yield base64.b64decode(audio_b64)
 
 
 @tool
