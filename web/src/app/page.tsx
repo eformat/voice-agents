@@ -468,7 +468,7 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-28">
       <div className="mx-auto max-w-3xl px-6 py-10 space-y-8">
         <header className="space-y-2">
           <h1 className="text-3xl font-semibold">Voice Agents (Web)</h1>
@@ -521,20 +521,6 @@ export default function Home() {
             >
               Disconnect
             </button>
-            <button
-              className="rounded-md bg-emerald-500 text-black px-3 py-2 text-sm disabled:opacity-50"
-              onClick={startRecording}
-              disabled={!connected || status === "recording"}
-            >
-              Start Recording
-            </button>
-            <button
-              className="rounded-md bg-amber-500 text-black px-3 py-2 text-sm disabled:opacity-50"
-              onClick={stopAndSend}
-              disabled={!connected || status !== "recording"}
-            >
-              Stop & Send
-            </button>
           </div>
 
           <div className="text-sm text-zinc-400">
@@ -549,8 +535,13 @@ export default function Home() {
           ) : null}
         </section>
 
-        <section className="rounded-xl border border-zinc-800 p-5 space-y-4">
-          <h2 className="font-semibold">Quick Test (No Mic Needed)</h2>
+        <details className="rounded-xl border border-zinc-800 p-5 space-y-4">
+          <summary className="font-semibold cursor-pointer select-none">
+            Quick Test (No Mic Needed)
+            <span className="ml-2 text-xs text-zinc-500 font-normal">
+              (expand)
+            </span>
+          </summary>
           <div className="flex flex-col gap-2">
             <label className="text-sm text-zinc-400">Send text into the agent graph</label>
             <textarea
@@ -592,7 +583,7 @@ export default function Home() {
               Tip: This is the easiest way to validate audio in environments where mic permissions aren’t available.
             </p>
           </div>
-        </section>
+        </details>
 
         <section className="grid gap-4 md:grid-cols-2">
           <div className="rounded-xl border border-zinc-800 p-5 space-y-2">
@@ -615,16 +606,24 @@ export default function Home() {
             {" "} | frames: <span className="text-zinc-200">{ttsStreamFrames}</span>
             {" "} | outHz: <span className="text-zinc-200">{ttsOutSampleRate || "-"}</span>
           </div>
-          <button
-            className="rounded-md border border-zinc-700 px-3 py-2 text-sm w-fit"
-            onClick={stopTtsStream}
-          >
-            Stop playback
-          </button>
-          <div className="text-xs text-zinc-500">
-            (Fallback player for non-streaming WAV responses)
-          </div>
-          <audio ref={audioRef} src={audioUrl || undefined} controls className="w-full" />
+          <details className="pt-1">
+            <summary className="cursor-pointer select-none text-sm text-zinc-300">
+              Playback controls
+              <span className="ml-2 text-xs text-zinc-500">(expand)</span>
+            </summary>
+            <div className="pt-3 space-y-2">
+              <button
+                className="rounded-md border border-zinc-700 px-3 py-2 text-sm w-fit"
+                onClick={stopTtsStream}
+              >
+                Stop playback
+              </button>
+              <div className="text-xs text-zinc-500">
+                (Fallback player for non-streaming WAV responses)
+              </div>
+              <audio ref={audioRef} src={audioUrl || undefined} controls className="w-full" />
+            </div>
+          </details>
         </section>
 
         <section className="rounded-xl border border-zinc-800 p-5 space-y-3">
@@ -642,6 +641,31 @@ export default function Home() {
             )}
           </div>
         </section>
+      </div>
+
+      {/* Bottom recording controls */}
+      <div className="fixed inset-x-0 bottom-0 border-t border-zinc-800 bg-zinc-950/90 backdrop-blur">
+        <div className="mx-auto max-w-3xl px-6 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-xs text-zinc-400">
+            Recording controls • Status: <span className="text-zinc-200">{status}</span>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <button
+              className="rounded-md bg-emerald-500 text-black px-3 py-2 text-sm disabled:opacity-50"
+              onClick={startRecording}
+              disabled={!connected || status === "recording"}
+            >
+              Start Recording
+            </button>
+            <button
+              className="rounded-md bg-amber-500 text-black px-3 py-2 text-sm disabled:opacity-50"
+              onClick={stopAndSend}
+              disabled={!connected || status !== "recording"}
+            >
+              Stop & Send
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
