@@ -94,7 +94,7 @@ def run_voice_clone(stream: bool = False) -> None:
         modalities=["text", "audio"],
         temperature=1.0,
         top_p=0.95,
-        extra_body={"top_k": 50},
+        extra_body={"top_k": 50, "audio_chunk_size": 10},
         stop=["<|eot_id|>", "<|end_of_text|>", "<|audio_eos|>"],
     )
     if stream:
