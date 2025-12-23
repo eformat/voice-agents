@@ -312,9 +312,9 @@ export default function Home() {
 
   const startRecording = async () => {
     setError("");
+    // Don't clear conversation/state when starting a new recording.
+    // The conversation will update when we send the audio and receive a graph result.
     setTranscript("");
-    setPizzaType("");
-    setMessages([]);
     pcmRef.current = [];
 
     if (!connected || !wsRef.current) {
