@@ -141,7 +141,7 @@ export default function Home() {
   // Coalesce incoming PCM chunks to reduce postMessage overhead.
   const ttsPendingPcmRef = useRef<Int16Array[]>([]);
   const ttsPendingSamplesRef = useRef<number>(0);
-  const ttsScheduleChunkMs = 120; // smaller pushes reduce burstiness/jitter feeding the worklet
+  const ttsScheduleChunkMs = 40; // match server WS chunking (~40ms) for smoother feeding
 
   const ttsBufferedMsRef = useRef<number>(0); // updated by interval for UI + min/max
   const ttsMinBufferedMsRef = useRef<number>(Number.POSITIVE_INFINITY);
@@ -151,6 +151,8 @@ export default function Home() {
   // Recording (capture exactly what we received from the model, before browser resampling).
   const ttsRecordedChunksRef = useRef<Int16Array[]>([]);
   const ttsRecordedSamplesRef = useRef<number>(0);
+  const ttsRecordedBuffersRef = useRef<ArrayBuffer[]>([]);
+  const ttsRecordedBytesLenRef = useRef<number>(0);
   const ttsStreamBytesRef = useRef<number>(0);
   const ttsStreamChunksRef = useRef<number>(0);
 
@@ -199,28 +201,53 @@ export default function Home() {
     setTtsRecordedBytes(0);
     ttsRecordedChunksRef.current = [];
     ttsRecordedSamplesRef.current = 0;
+    ttsRecordedBuffersRef.current = [];
+    ttsRecordedBytesLenRef.current = 0;
   };
 
   const finalizeTtsRecording = () => {
     if (!ttsRecordEnabled) return;
     const sr = ttsRecordedSampleRate || ttsSampleRateRef.current;
-    const chunks = ttsRecordedChunksRef.current;
-    const total = ttsRecordedSamplesRef.current;
-    if (!sr || !chunks.length || !total) return;
+    if (!sr) return;
 
-    const joined = new Int16Array(total);
-    let off = 0;
-    for (const c of chunks) {
-      joined.set(c, off);
-      off += c.length;
+    // Prefer binary-frame recording (zero-copy) when available.
+    const bufs = ttsRecordedBuffersRef.current;
+    const totalBytes = ttsRecordedBytesLenRef.current;
+    let wav: Blob | null = null;
+    let durationMs = 0;
+    if (bufs.length && totalBytes) {
+      const joinedBytes = new Uint8Array(totalBytes);
+      let offB = 0;
+      for (const b of bufs) {
+        joinedBytes.set(new Uint8Array(b), offB);
+        offB += b.byteLength;
+      }
+      // Ensure even bytes for int16.
+      const evenLen = joinedBytes.length - (joinedBytes.length % 2);
+      const i16 = bytesToInt16View(joinedBytes.subarray(0, evenLen));
+      wav = pcmToWavBlob(i16, sr);
+      durationMs = (i16.length / sr) * 1000;
+    } else {
+      const chunks = ttsRecordedChunksRef.current;
+      const total = ttsRecordedSamplesRef.current;
+      if (!chunks.length || !total) return;
+      const joined = new Int16Array(total);
+      let off = 0;
+      for (const c of chunks) {
+        joined.set(c, off);
+        off += c.length;
+      }
+      wav = pcmToWavBlob(joined, sr);
+      durationMs = (joined.length / sr) * 1000;
     }
-    const wav = pcmToWavBlob(joined, sr);
+    if (!wav) return;
+
     const url = URL.createObjectURL(wav);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     setTtsRecordedUrl(url);
     setTtsRecordedFilename(`tts-stream-${ts}.wav`);
     setTtsRecordedBytes(wav.size);
-    setTtsRecordedDurationMs((joined.length / sr) * 1000);
+    setTtsRecordedDurationMs(durationMs);
   };
 
   const ensureTtsWorklet = async (inRate: number) => {
@@ -549,6 +576,15 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           if (!ttsReceivingBinaryRef.current) return;
           const handleBytes = (bytes: Uint8Array) => {
             ttsStreamBytesRef.current += bytes.length;
+            if (ttsRecordEnabled) {
+              // Record raw WS PCM frames (zero-copy-ish): store the ArrayBuffer slice and assemble at end.
+              const ab: ArrayBuffer =
+                bytes.buffer instanceof ArrayBuffer
+                  ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+                  : new Uint8Array(bytes).slice().buffer;
+              ttsRecordedBuffersRef.current.push(ab);
+              ttsRecordedBytesLenRef.current += bytes.byteLength;
+            }
             const rem = ttsByteRemainderRef.current;
             let combined: Uint8Array;
             if (rem.length) {
@@ -564,10 +600,6 @@ registerProcessor("tts-player", TtsPlayerProcessor);
               const i16 = bytesToInt16View(frameBytes);
               if (i16.length) {
                 const inRate = ttsSampleRateRef.current;
-                if (ttsRecordEnabled) {
-                  ttsRecordedChunksRef.current.push(i16.slice());
-                  ttsRecordedSamplesRef.current += i16.length;
-                }
                 ttsPendingPcmRef.current.push(i16);
                 ttsPendingSamplesRef.current += i16.length;
                 const targetSamples = Math.max(1, Math.floor((inRate * ttsScheduleChunkMs) / 1000));
@@ -644,7 +676,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
               if (i16.length) {
                 const inRate = ttsSampleRateRef.current;
                 if (ttsRecordEnabled) {
-                  // Copy so we can transfer other buffers to the worklet without detaching recorded data.
+                  // Legacy path: we don't have the original WS binary frames, so store sample copies.
                   ttsRecordedChunksRef.current.push(i16.slice());
                   ttsRecordedSamplesRef.current += i16.length;
                 }
