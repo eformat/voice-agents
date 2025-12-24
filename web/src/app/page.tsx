@@ -125,7 +125,8 @@ export default function Home() {
   // We keep raw ArrayBuffers and transfer them to the AudioWorklet to minimize copying.
   const ttsPendingPcmBuffersRef = useRef<ArrayBuffer[]>([]);
   const ttsPendingPcmBytesRef = useRef<number>(0);
-  const ttsScheduleChunkMs = 40; // match server WS chunking (~40ms) for smoother feeding
+  // Send bigger blocks to the worklet to reduce message/alloc overhead.
+  const ttsScheduleChunkMs = 200;
 
   const ttsBufferedMsRef = useRef<number>(0); // updated by interval for UI + min/max
   const ttsMinBufferedMsRef = useRef<number>(Number.POSITIVE_INFINITY);
@@ -460,14 +461,23 @@ registerProcessor("tts-player", TtsPlayerProcessor);
     }
     await ensureTtsWorklet(inRate);
 
-    // Transfer each buffer to the worklet to avoid copying/concatenation on the main thread.
-    for (const b of bufs) {
-      try {
-        ttsWorkletNodeRef.current?.port.postMessage({ type: "push", pcm: b }, [b]);
-      } catch {
-        // Fallback: structured clone (no transfer)
-        ttsWorkletNodeRef.current?.port.postMessage({ type: "push", pcm: b });
+    // Prefer a single larger push to reduce port messaging overhead.
+    let payload: ArrayBuffer;
+    if (bufs.length === 1) {
+      payload = bufs[0];
+    } else {
+      const joined = new Uint8Array(totalBytes);
+      let off = 0;
+      for (const b of bufs) {
+        joined.set(new Uint8Array(b), off);
+        off += b.byteLength;
       }
+      payload = joined.buffer;
+    }
+    try {
+      ttsWorkletNodeRef.current?.port.postMessage({ type: "push", pcm: payload }, [payload]);
+    } catch {
+      ttsWorkletNodeRef.current?.port.postMessage({ type: "push", pcm: payload });
     }
 
     // Stats: approximate output frames (mono int16).
