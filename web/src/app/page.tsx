@@ -108,7 +108,7 @@ export default function Home() {
   const ttsSampleRateRef = useRef<number>(24000);
   const ttsStartedRef = useRef<boolean>(false);
   const ttsByteRemainderRef = useRef<Uint8Array>(new Uint8Array(0));
-  const ttsPrebufferMs = 1200; // prebuffer before starting playback to absorb jitter
+  const ttsPrebufferMs = 2000; // prebuffer before starting playback to absorb jitter
   // Micro rebuffer gate (does not increase initial delay): pause when dangerously low, resume quickly.
   // This trades "choppy clicks" (underruns) for short pauses.
   const ttsLowWaterMs = 30;
@@ -117,7 +117,7 @@ export default function Home() {
   const ttsRebufferHoldMs = 150;
   // Prevent frequent tiny pauses by enforcing a minimum time between rebuffers.
   // During cooldown we keep playing unless buffer becomes critically low.
-  const ttsRebufferCooldownMs = 1800;
+  const ttsRebufferCooldownMs = 2000;
   const ttsEmergencyLowMs = 20;
 
   const ttsWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
