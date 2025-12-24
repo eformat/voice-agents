@@ -117,7 +117,7 @@ export default function Home() {
   const ttsRebufferHoldMs = 140;
   // Prevent frequent tiny pauses by enforcing a minimum time between rebuffers.
   // During cooldown we keep playing unless buffer becomes critically low.
-  const ttsRebufferCooldownMs = 220;
+  const ttsRebufferCooldownMs = 450;
   const ttsEmergencyLowMs = 10;
 
   const ttsWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
@@ -126,6 +126,7 @@ export default function Home() {
   const ttsWorkletUnderrunsRef = useRef<number>(0);
   const ttsWorkletRebuffersRef = useRef<number>(0);
   const ttsWorkletPlayingRef = useRef<boolean>(false);
+  const ttsStatsLatchedRef = useRef<boolean>(false);
 
   // Shared ring buffer (SharedArrayBuffer + Atomics) to avoid per-chunk port messaging.
   const ttsSabAudioRef = useRef<SharedArrayBuffer | null>(null);
@@ -595,8 +596,10 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       setTtsStreamFrames(ttsStreamFramesRef.current);
       // Keep these visible after the stream ends (idle) for debugging.
       if (ttsStreamStatusRef.current !== "idle" || ttsWorkletNodeRef.current) {
-        setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
-        setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
+        if (!ttsStatsLatchedRef.current) {
+          setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
+          setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
+        }
       }
       // Generation speed: (audio seconds produced) / (wall clock seconds elapsed).
       // Freeze once the stream ends so it doesn't drift while idle/draining.
@@ -686,6 +689,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
         if (msg.type === "transcript") setTranscript(msg.text);
         if (msg.type === "tts_begin") {
           stopTtsStream({ resetStats: true });
+          ttsStatsLatchedRef.current = false;
           ttsSampleRateRef.current = msg.sample_rate;
           ttsReceivingBinaryRef.current = true;
           setTtsStreamStatus("buffering");
@@ -742,6 +746,10 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           try {
             ttsWorkletNodeRef.current?.port.postMessage({ type: "eos" });
           } catch {}
+          // Latch final counters to avoid late worklet stats overwriting UI during/after draining.
+          ttsStatsLatchedRef.current = true;
+          setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
+          setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
           // Capture a WAV of exactly what we received from the model.
           finalizeTtsRecording();
           const check = setInterval(() => {
