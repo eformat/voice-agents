@@ -108,7 +108,7 @@ export default function Home() {
   const ttsSampleRateRef = useRef<number>(24000);
   const ttsStartedRef = useRef<boolean>(false);
   const ttsByteRemainderRef = useRef<Uint8Array>(new Uint8Array(0));
-  const ttsPrebufferMs = 1800; // prebuffer before starting playback to absorb jitter
+  const ttsPrebufferMs = 2400; // prebuffer before starting playback to absorb jitter
   // Mid-stream rebuffering was causing audible "chops" even when the ring buffer never truly underruns.
   // Disable it and rely on actual underruns (zeros) as the only failure mode.
   const ttsLowWaterMs = 0;
