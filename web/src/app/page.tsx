@@ -92,6 +92,12 @@ export default function Home() {
   const [ttsOutSampleRate, setTtsOutSampleRate] = useState<number>(0);
   const [ttsStreamMinBufferedMs, setTtsStreamMinBufferedMs] = useState<number>(0);
   const [ttsStreamMaxBufferedMs, setTtsStreamMaxBufferedMs] = useState<number>(0);
+  const [ttsRecordEnabled, setTtsRecordEnabled] = useState<boolean>(true);
+  const [ttsRecordedUrl, setTtsRecordedUrl] = useState<string>("");
+  const [ttsRecordedFilename, setTtsRecordedFilename] = useState<string>("");
+  const [ttsRecordedSampleRate, setTtsRecordedSampleRate] = useState<number>(0);
+  const [ttsRecordedDurationMs, setTtsRecordedDurationMs] = useState<number>(0);
+  const [ttsRecordedBytes, setTtsRecordedBytes] = useState<number>(0);
   const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
   const [micDeviceId, setMicDeviceId] = useState<string>("default");
 
@@ -123,6 +129,10 @@ export default function Home() {
   const ttsMaxBufferedMsRef = useRef<number>(0);
   const ttsStreamStatusRef = useRef<string>("idle");
 
+  // Recording (capture exactly what we received from the model, before browser resampling).
+  const ttsRecordedChunksRef = useRef<Int16Array[]>([]);
+  const ttsRecordedSamplesRef = useRef<number>(0);
+
   const _ttsOutRate = () => ttsCtxRef.current?.sampleRate ?? ttsSampleRateRef.current;
 
   const stopTtsStream = (opts?: { resetStats?: boolean }) => {
@@ -151,6 +161,38 @@ export default function Home() {
       setTtsStreamMaxBufferedMs(0);
     }
     setTtsStreamStatus("idle");
+  };
+
+  const clearTtsRecording = () => {
+    setTtsRecordedUrl("");
+    setTtsRecordedFilename("");
+    setTtsRecordedSampleRate(0);
+    setTtsRecordedDurationMs(0);
+    setTtsRecordedBytes(0);
+    ttsRecordedChunksRef.current = [];
+    ttsRecordedSamplesRef.current = 0;
+  };
+
+  const finalizeTtsRecording = () => {
+    if (!ttsRecordEnabled) return;
+    const sr = ttsRecordedSampleRate || ttsSampleRateRef.current;
+    const chunks = ttsRecordedChunksRef.current;
+    const total = ttsRecordedSamplesRef.current;
+    if (!sr || !chunks.length || !total) return;
+
+    const joined = new Int16Array(total);
+    let off = 0;
+    for (const c of chunks) {
+      joined.set(c, off);
+      off += c.length;
+    }
+    const wav = pcmToWavBlob(joined, sr);
+    const url = URL.createObjectURL(wav);
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    setTtsRecordedUrl(url);
+    setTtsRecordedFilename(`tts-stream-${ts}.wav`);
+    setTtsRecordedBytes(wav.size);
+    setTtsRecordedDurationMs((joined.length / sr) * 1000);
   };
 
   const flushPendingTts = (ctx: AudioContext, inRate: number) => {
@@ -199,6 +241,17 @@ export default function Home() {
   useEffect(() => {
     ttsStreamStatusRef.current = ttsStreamStatus;
   }, [ttsStreamStatus]);
+
+  // Revoke old recorded URLs to avoid leaks.
+  const prevTtsRecordedUrlRef = useRef<string>("");
+  useEffect(() => {
+    const prev = prevTtsRecordedUrlRef.current;
+    if (prev && prev !== ttsRecordedUrl) URL.revokeObjectURL(prev);
+    prevTtsRecordedUrlRef.current = ttsRecordedUrl;
+    return () => {
+      if (ttsRecordedUrl) URL.revokeObjectURL(ttsRecordedUrl);
+    };
+  }, [ttsRecordedUrl]);
 
   const ensureTtsContext = async (_sr: number) => {
     if (ttsCtxRef.current) return ttsCtxRef.current;
@@ -266,6 +319,10 @@ export default function Home() {
           setTtsStreamMinBufferedMs(0);
           setTtsStreamMaxBufferedMs(0);
           ttsNextPlayTimeRef.current = 0;
+          if (ttsRecordEnabled) {
+            clearTtsRecording();
+            setTtsRecordedSampleRate(msg.sample_rate);
+          }
           // Ensure AudioContext exists (even if suspended).
           void ensureTtsContext(ttsSampleRateRef.current);
         }
@@ -293,6 +350,10 @@ export default function Home() {
               const i16 = bytesToInt16(frameBytes); // PCM @ ttsSampleRateRef
               if (i16.length) {
                 const inRate = ttsSampleRateRef.current;
+                if (ttsRecordEnabled) {
+                  ttsRecordedChunksRef.current.push(i16);
+                  ttsRecordedSamplesRef.current += i16.length;
+                }
                 const f32 = new Float32Array(i16.length);
                 for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
 
@@ -319,6 +380,8 @@ export default function Home() {
           void ensureTtsContext(ttsSampleRateRef.current).then((ctx) =>
             flushPendingTts(ctx, ttsSampleRateRef.current)
           );
+          // Capture a WAV of exactly what we received from the model.
+          finalizeTtsRecording();
           const check = setInterval(() => {
             const ctx = ttsCtxRef.current;
             const ms =
@@ -676,6 +739,51 @@ export default function Home() {
               >
                 Stop playback
               </button>
+
+              <div className="pt-2 border-t border-zinc-800">
+                <div className="text-sm text-zinc-200 font-medium">Stream recording</div>
+                <label className="mt-2 flex items-center gap-2 text-sm text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={ttsRecordEnabled}
+                    onChange={(e) => setTtsRecordEnabled(e.target.checked)}
+                  />
+                  Record streamed TTS to WAV (captures exactly what the model sent)
+                </label>
+
+                {ttsRecordedUrl ? (
+                  <div className="mt-3 space-y-2">
+                    <div className="text-xs text-zinc-400">
+                      Recorded:{" "}
+                      <span className="text-zinc-200">
+                        {(ttsRecordedDurationMs / 1000).toFixed(2)}s
+                      </span>{" "}
+                      @ <span className="text-zinc-200">{ttsRecordedSampleRate || "-"}</span> Hz •{" "}
+                      <span className="text-zinc-200">{ttsRecordedBytes}</span> bytes
+                    </div>
+                    <audio src={ttsRecordedUrl} controls className="w-full" />
+                    <div className="flex gap-2 flex-wrap">
+                      <a
+                        className="rounded-md border border-zinc-700 px-3 py-2 text-sm w-fit"
+                        href={ttsRecordedUrl}
+                        download={ttsRecordedFilename || "tts-stream.wav"}
+                      >
+                        Download recorded WAV
+                      </a>
+                      <button
+                        className="rounded-md border border-zinc-700 px-3 py-2 text-sm w-fit"
+                        onClick={clearTtsRecording}
+                      >
+                        Clear recording
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-2 text-xs text-zinc-500">
+                    No recording yet. Run “stream tts only” to generate one.
+                  </div>
+                )}
+              </div>
               <div className="text-xs text-zinc-500">
                 (Fallback player for non-streaming WAV responses)
               </div>
