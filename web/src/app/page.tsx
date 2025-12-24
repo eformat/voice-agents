@@ -113,6 +113,8 @@ export default function Home() {
   // This trades "choppy clicks" (underruns) for short pauses.
   const ttsLowWaterMs = 30;
   const ttsHighWaterMs = 400;
+  // Prevent rapid pause/resume "ticking" by holding a minimum pause duration once we rebuffer.
+  const ttsRebufferHoldMs = 140;
 
   const ttsWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const ttsWorkletModuleUrlRef = useRef<string>("");
@@ -269,6 +271,9 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     this.startedOnce = false;
     this.enabled = true;
     this.eos = false;
+    this.holdFrames = 0;
+    this.holdUntil = 0;
+    this.outCursor = 0;
     this.startFrames = Math.floor(this.outRate * 0.9);
     this.lowFrames = Math.floor(this.outRate * 0.25);
     this.highFrames = Math.floor(this.outRate * 0.75);
@@ -284,6 +289,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
         if (typeof msg.startFrames === "number") this.startFrames = Math.max(0, msg.startFrames|0);
         if (typeof msg.lowFrames === "number") this.lowFrames = Math.max(0, msg.lowFrames|0);
         if (typeof msg.highFrames === "number") this.highFrames = Math.max(0, msg.highFrames|0);
+        if (typeof msg.holdFrames === "number") this.holdFrames = Math.max(0, msg.holdFrames|0);
       } else if (msg.type === "init_shared" && msg.ctrl && msg.audio && typeof msg.audioSamples === "number") {
         this.sharedCtrl = msg.ctrl;
         this.sharedAudio = msg.audio;
@@ -300,6 +306,8 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
         // Reset counters; the producer/consumer pointers are managed in shared ctrl.
         this.underruns = 0;
         this.rebuffers = 0; this.playing = false; this.enabled = true; this.eos = false;
+        this.holdUntil = 0;
+        this.outCursor = 0;
         this.rem = new Float32Array(0); this.pos = 0;
       }
     };
@@ -317,6 +325,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
   process(inputs, outputs) {
     const out = outputs[0][0];
     const frames = out.length;
+    this.outCursor += frames;
     if (!this.ctrl || !this.audio || !this.audioSamples) {
       out.fill(0);
       return true;
@@ -347,10 +356,14 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     // If we drop below lowFrames, pause until we refill above highFrames.
     if (!this.playing) {
       const bufferedFrames = Math.floor((avail0 * this.outRate) / this.inRate);
+      // After a rebuffer, enforce a minimum pause duration to avoid "ticking".
+      const holdActive = this.startedOnce && this.outCursor < this.holdUntil;
       const startThreshold = this.startedOnce && this.highFrames > 0 ? this.highFrames : this.startFrames;
       if (bufferedFrames >= startThreshold || (startThreshold === 0 && bufferedFrames > 0)) {
-        this.playing = true;
-        this.startedOnce = true;
+        if (!holdActive) {
+          this.playing = true;
+          this.startedOnce = true;
+        }
       } else {
         out.fill(0);
         this._tick++;
@@ -359,11 +372,16 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
         }
         return true;
       }
+      if (!this.playing) {
+        out.fill(0);
+        return true;
+      }
     }
     const bufferedFramesNow = Math.floor((avail0 * this.outRate) / this.inRate);
     if (this.lowFrames > 0 && bufferedFramesNow < this.lowFrames) {
       this.playing = false;
       this.rebuffers++;
+      if (this.holdFrames > 0) this.holdUntil = this.outCursor + this.holdFrames;
       out.fill(0);
       this._tick++;
       if ((this._tick % 20) === 0) {
@@ -449,7 +467,8 @@ registerProcessor("tts-player", TtsPlayerProcessor);
     const startFrames = Math.max(0, Math.floor((ctx.sampleRate * ttsPrebufferMs) / 1000));
     const lowFrames = Math.max(0, Math.floor((ctx.sampleRate * ttsLowWaterMs) / 1000));
     const highFrames = Math.max(lowFrames, Math.floor((ctx.sampleRate * ttsHighWaterMs) / 1000));
-    node.port.postMessage({ type: "config", inRate, startFrames, lowFrames, highFrames });
+    const holdFrames = Math.max(0, Math.floor((ctx.sampleRate * ttsRebufferHoldMs) / 1000));
+    node.port.postMessage({ type: "config", inRate, startFrames, lowFrames, highFrames, holdFrames });
     ttsWorkletNodeRef.current = node;
     return node;
   };
