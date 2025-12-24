@@ -111,8 +111,8 @@ export default function Home() {
   const ttsPrebufferMs = 2000; // prebuffer before starting playback to absorb jitter
   // Micro rebuffer gate (does not increase initial delay): pause when dangerously low, resume quickly.
   // This trades "choppy clicks" (underruns) for short pauses.
-  const ttsLowWaterMs = 50;
-  const ttsHighWaterMs = 300;
+  const ttsLowWaterMs = 30;
+  const ttsHighWaterMs = 400;
 
   const ttsWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const ttsWorkletModuleUrlRef = useRef<string>("");
