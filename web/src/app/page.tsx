@@ -121,12 +121,12 @@ export default function Home() {
   const ttsWorkletRebuffersRef = useRef<number>(0);
   const ttsWorkletPlayingRef = useRef<boolean>(false);
 
-  // Coalesce raw PCM bytes to reduce postMessage overhead.
-  // We keep raw ArrayBuffers and transfer them to the AudioWorklet to minimize copying.
-  const ttsPendingPcmBuffersRef = useRef<ArrayBuffer[]>([]);
-  const ttsPendingPcmBytesRef = useRef<number>(0);
-  // Send bigger blocks to the worklet to reduce message/alloc overhead.
-  const ttsScheduleChunkMs = 200;
+  // Shared ring buffer (SharedArrayBuffer + Atomics) to avoid per-chunk port messaging.
+  const ttsSabAudioRef = useRef<SharedArrayBuffer | null>(null);
+  const ttsSabCtrlRef = useRef<SharedArrayBuffer | null>(null);
+  const ttsSabAudioI16Ref = useRef<Int16Array | null>(null);
+  const ttsSabCtrlI32Ref = useRef<Int32Array | null>(null);
+  const ttsSabSamplesRef = useRef<number>(0);
 
   const ttsBufferedMsRef = useRef<number>(0); // updated by interval for UI + min/max
   const ttsMinBufferedMsRef = useRef<number>(Number.POSITIVE_INFINITY);
@@ -148,8 +148,11 @@ export default function Home() {
     ttsStartedRef.current = false;
     ttsByteRemainderRef.current = new Uint8Array(0);
     ttsBufferedMsRef.current = 0;
-    ttsPendingPcmBuffersRef.current = [];
-    ttsPendingPcmBytesRef.current = 0;
+    ttsSabAudioRef.current = null;
+    ttsSabCtrlRef.current = null;
+    ttsSabAudioI16Ref.current = null;
+    ttsSabCtrlI32Ref.current = null;
+    ttsSabSamplesRef.current = 0;
     ttsWorkletBufferedFramesRef.current = 0;
     ttsWorkletPlayingRef.current = false;
     try {
@@ -250,9 +253,11 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     super();
     this.inRate = 24000;
     this.outRate = sampleRate;
-    this.ringSize = Math.max(1, Math.floor(this.outRate * 10));
-    this.ring = new Float32Array(this.ringSize);
-    this.r = 0; this.w = 0; this.count = 0;
+    this.sharedCtrl = null;
+    this.sharedAudio = null;
+    this.ctrl = null; // Int32Array view
+    this.audio = null; // Int16Array view (input sample rate)
+    this.audioSamples = 0;
     this.underruns = 0;
     this.rebuffers = 0;
     this.playing = false;
@@ -273,6 +278,12 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
         if (typeof msg.startFrames === "number") this.startFrames = Math.max(0, msg.startFrames|0);
         if (typeof msg.lowFrames === "number") this.lowFrames = Math.max(0, msg.lowFrames|0);
         if (typeof msg.highFrames === "number") this.highFrames = Math.max(0, msg.highFrames|0);
+      } else if (msg.type === "init_shared" && msg.ctrl && msg.audio && typeof msg.audioSamples === "number") {
+        this.sharedCtrl = msg.ctrl;
+        this.sharedAudio = msg.audio;
+        this.ctrl = new Int32Array(this.sharedCtrl);
+        this.audio = new Int16Array(this.sharedAudio);
+        this.audioSamples = msg.audioSamples|0;
       } else if (msg.type === "eos") {
         // No more input is expected for this stream.
         this.eos = true;
@@ -280,143 +291,131 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
         this.enabled = false;
         this.playing = false;
       } else if (msg.type === "reset") {
-        this.r = 0; this.w = 0; this.count = 0; this.underruns = 0;
+        // Reset counters; the producer/consumer pointers are managed in shared ctrl.
+        this.underruns = 0;
         this.rebuffers = 0; this.playing = false; this.enabled = true; this.eos = false;
         this.rem = new Float32Array(0); this.pos = 0;
-      } else if (msg.type === "push" && msg.pcm) {
-        const i16 = new Int16Array(msg.pcm);
-        const f32 = new Float32Array(i16.length);
-        for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
-        this._pushResampled(f32);
       }
     };
   }
 
-  _ringWrite(samples) {
-    const size = this.ringSize;
-    if (!size) return;
-    let src = samples;
-    if (src.length >= size) src = src.subarray(src.length - size);
-    const overflow = this.count + src.length - size;
-    if (overflow > 0) {
-      this.r = (this.r + overflow) % size;
-      this.count = Math.max(0, this.count - overflow);
-    }
-    const first = Math.min(src.length, size - this.w);
-    this.ring.set(src.subarray(0, first), this.w);
-    const remain = src.length - first;
-    if (remain > 0) this.ring.set(src.subarray(first), 0);
-    this.w = (this.w + src.length) % size;
-    this.count += src.length;
+  _availableInputSamples(w, r, size) {
+    return w >= r ? (w - r) : (size - (r - w));
   }
 
-  _pushResampled(input) {
-    const step = this.inRate / this.outRate; // input samples per output sample
-    const rem = this.rem;
-    const inBuf = rem.length ? new Float32Array(rem.length + input.length) : input;
-    if (rem.length) {
-      inBuf.set(rem, 0);
-      inBuf.set(input, rem.length);
-    }
-    let pos = this.pos;
-    if (inBuf.length < 2) {
-      this.rem = inBuf;
-      this.pos = pos;
-      return;
-    }
-    const available = inBuf.length - 1 - pos;
-    const outCount = available > 0 ? (Math.floor(available / step) + 1) : 0;
-    if (outCount <= 0) {
-      this.rem = inBuf;
-      this.pos = pos;
-      return;
-    }
-    const out = new Float32Array(outCount);
-    for (let i = 0; i < outCount; i++) {
-      const idx = Math.floor(pos);
-      const frac = pos - idx;
-      const s0 = inBuf[idx];
-      const s1 = inBuf[idx + 1];
-      out[i] = s0 + (s1 - s0) * frac;
-      pos += step;
-    }
-    this._ringWrite(out);
-    const consumedInt = Math.floor(pos);
-    pos = pos - consumedInt;
-    this.rem = inBuf.subarray(consumedInt);
-    this.pos = pos;
+  _readInputSampleAt(pos) {
+    // pos is modulo audioSamples
+    return this.audio[pos] / 32768;
   }
 
   process(inputs, outputs) {
     const out = outputs[0][0];
     const frames = out.length;
-    const size = this.ringSize;
+    if (!this.ctrl || !this.audio || !this.audioSamples) {
+      out.fill(0);
+      return true;
+    }
     if (!this.enabled) {
       out.fill(0);
       this._tick++;
       if ((this._tick % 20) === 0) {
-        this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
+        this.port.postMessage({ type: "stats", bufferedFrames: 0, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
       }
       return true;
     }
     // Once stream ended and buffer drained, stop processing (and stop counting underruns).
-    if (this.eos && this.count <= 0) {
+    const w0 = Atomics.load(this.ctrl, 0);
+    const r0 = Atomics.load(this.ctrl, 1);
+    const avail0 = this._availableInputSamples(w0, r0, this.audioSamples);
+    if (this.eos && avail0 <= 0) {
       this.enabled = false;
       this.playing = false;
       out.fill(0);
       this._tick++;
       if ((this._tick % 20) === 0) {
-        this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
+        this.port.postMessage({ type: "stats", bufferedFrames: 0, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
       }
       return true;
     }
     // Jitter buffer gating: don't start until we have startFrames buffered.
     // If we drop below lowFrames, pause until we refill above highFrames.
     if (!this.playing) {
-      if (this.count >= this.startFrames || (this.startFrames === 0 && this.count > 0)) {
+      const bufferedFrames = Math.floor((avail0 * this.outRate) / this.inRate);
+      if (bufferedFrames >= this.startFrames || (this.startFrames === 0 && bufferedFrames > 0)) {
         this.playing = true;
       } else {
         out.fill(0);
         this._tick++;
         if ((this._tick % 20) === 0) {
-          this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
+          this.port.postMessage({ type: "stats", bufferedFrames, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
         }
         return true;
       }
     }
-    if (this.count < this.lowFrames) {
+    const bufferedFramesNow = Math.floor((avail0 * this.outRate) / this.inRate);
+    if (bufferedFramesNow < this.lowFrames) {
       this.playing = false;
       this.rebuffers++;
       out.fill(0);
       this._tick++;
       if ((this._tick % 20) === 0) {
-        this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
+        this.port.postMessage({ type: "stats", bufferedFrames: bufferedFramesNow, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
       }
       return true;
     }
     // If we were paused and refilled enough, resume.
-    if (!this.playing && this.count >= this.highFrames) {
+    if (!this.playing && bufferedFramesNow >= this.highFrames) {
       this.playing = true;
     }
-    if (!size || this.count <= 0) {
+    // Resample directly from shared input ring into output.
+    let w = w0;
+    let r = r0;
+    let avail = avail0;
+    const step = this.inRate / this.outRate; // input samples per output sample
+    let frac = this.pos;
+    // Ensure we have at least 2 samples for interpolation.
+    if (avail < 2) {
       out.fill(0);
       this.underruns++;
-    } else {
-      const toRead = Math.min(frames, this.count);
-      const first = Math.min(toRead, size - this.r);
-      out.set(this.ring.subarray(this.r, this.r + first), 0);
-      const remain = toRead - first;
-      if (remain > 0) out.set(this.ring.subarray(0, remain), first);
-      if (toRead < frames) {
-        out.fill(0, toRead);
-        this.underruns++;
+      this._tick++;
+      if ((this._tick % 20) === 0) {
+        const bf = Math.floor((avail * this.outRate) / this.inRate);
+        this.port.postMessage({ type: "stats", bufferedFrames: bf, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
       }
-      this.r = (this.r + toRead) % size;
-      this.count -= toRead;
+      return true;
     }
+    // Prime s0/s1 from current read position.
+    let s0 = this._readInputSampleAt(r);
+    let s1 = this._readInputSampleAt((r + 1) % this.audioSamples);
+    // We'll consume input by advancing r as needed when frac crosses 1.0
+    for (let i = 0; i < frames; i++) {
+      out[i] = s0 + (s1 - s0) * frac;
+      frac += step;
+      while (frac >= 1.0) {
+        frac -= 1.0;
+        // consume one input sample: advance r by 1
+        r = (r + 1) % this.audioSamples;
+        avail -= 1;
+        if (avail < 1) {
+          // no next sample available
+          out.fill(0, i + 1);
+          this.underruns++;
+          break;
+        }
+        s0 = s1;
+        s1 = this._readInputSampleAt((r + 1) % this.audioSamples);
+      }
+      if (avail < 1) break;
+    }
+    this.pos = frac;
+    Atomics.store(this.ctrl, 1, r);
     this._tick++;
     if ((this._tick % 20) === 0) {
-      this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
+      const w1 = Atomics.load(this.ctrl, 0);
+      const r1 = Atomics.load(this.ctrl, 1);
+      const avail1 = this._availableInputSamples(w1, r1, this.audioSamples);
+      const bufferedFrames = Math.floor((avail1 * this.outRate) / this.inRate);
+      this.port.postMessage({ type: "stats", bufferedFrames, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
     }
     return true;
   }
@@ -447,44 +446,53 @@ registerProcessor("tts-player", TtsPlayerProcessor);
     return node;
   };
 
-  const flushPendingTts = async (inRate: number) => {
-    const totalBytes = ttsPendingPcmBytesRef.current;
-    if (!totalBytes) return;
-    const bufs = ttsPendingPcmBuffersRef.current;
-    ttsPendingPcmBuffersRef.current = [];
-    ttsPendingPcmBytesRef.current = 0;
-
-    const ctx = await ensureTtsContext(inRate);
-    if (!ttsStartedRef.current) {
-      ttsStartedRef.current = true;
-      setTtsStreamStatus("playing");
+  const ensureSharedRing = (inRate: number) => {
+    // 12s ring at input sample rate; enough to absorb jitter without being huge.
+    const seconds = 12;
+    const samples = Math.max(1, Math.floor(inRate * seconds));
+    if (ttsSabAudioRef.current && ttsSabSamplesRef.current === samples) return;
+    // Require cross-origin isolation for SharedArrayBuffer.
+    if (typeof SharedArrayBuffer === "undefined" || !(globalThis as any).crossOriginIsolated) {
+      throw new Error(
+        "SharedArrayBuffer unavailable. Ensure COOP/COEP headers are set (crossOriginIsolated=true)."
+      );
     }
-    await ensureTtsWorklet(inRate);
-
-    // Prefer a single larger push to reduce port messaging overhead.
-    let payload: ArrayBuffer;
-    if (bufs.length === 1) {
-      payload = bufs[0];
-    } else {
-      const joined = new Uint8Array(totalBytes);
-      let off = 0;
-      for (const b of bufs) {
-        joined.set(new Uint8Array(b), off);
-        off += b.byteLength;
-      }
-      payload = joined.buffer;
-    }
-    try {
-      ttsWorkletNodeRef.current?.port.postMessage({ type: "push", pcm: payload }, [payload]);
-    } catch {
-      ttsWorkletNodeRef.current?.port.postMessage({ type: "push", pcm: payload });
-    }
-
-    // Stats: approximate output frames (mono int16).
-    const totalSamples = Math.floor(totalBytes / 2);
-    const outFrames = Math.max(1, Math.round((totalSamples * ctx.sampleRate) / inRate));
-    setTtsStreamFrames((n) => n + outFrames);
+    ttsSabSamplesRef.current = samples;
+    ttsSabAudioRef.current = new SharedArrayBuffer(samples * 2);
+    ttsSabCtrlRef.current = new SharedArrayBuffer(8); // 2x int32: writePos, readPos
+    ttsSabAudioI16Ref.current = new Int16Array(ttsSabAudioRef.current);
+    ttsSabCtrlI32Ref.current = new Int32Array(ttsSabCtrlRef.current);
+    Atomics.store(ttsSabCtrlI32Ref.current, 0, 0);
+    Atomics.store(ttsSabCtrlI32Ref.current, 1, 0);
   };
+
+  const writeToSharedRing = (pcmBuf: ArrayBuffer) => {
+    const ring = ttsSabAudioI16Ref.current;
+    const ctrl = ttsSabCtrlI32Ref.current;
+    if (!ring || !ctrl) return;
+    const src = new Int16Array(pcmBuf);
+    const size = ring.length;
+    let w = Atomics.load(ctrl, 0);
+    let r = Atomics.load(ctrl, 1);
+    const avail = w >= r ? (w - r) : (size - (r - w));
+    let free = size - avail - 1;
+    // If overflow, drop oldest by advancing read pointer.
+    if (src.length > free) {
+      const drop = src.length - free;
+      r = (r + drop) % size;
+      Atomics.store(ctrl, 1, r);
+      free += drop;
+    }
+    const toWrite = Math.min(src.length, free);
+    const first = Math.min(toWrite, size - w);
+    ring.set(src.subarray(0, first), w);
+    const remain = toWrite - first;
+    if (remain > 0) ring.set(src.subarray(first, first + remain), 0);
+    w = (w + toWrite) % size;
+    Atomics.store(ctrl, 0, w);
+  };
+
+  // No per-chunk AudioWorklet messaging path: we write into the SharedArrayBuffer ring.
 
   useEffect(() => {
     ttsStreamStatusRef.current = ttsStreamStatus;
@@ -581,14 +589,8 @@ registerProcessor("tts-player", TtsPlayerProcessor);
               ttsRecordedBuffersRef.current.push(copy);
               ttsRecordedBytesLenRef.current += copy.byteLength;
             }
-
-            // Feed worklet: accumulate raw PCM buffers and transfer them on flush.
-            ttsPendingPcmBuffersRef.current.push(buf);
-            ttsPendingPcmBytesRef.current += len;
-
-            const inRate = ttsSampleRateRef.current;
-            const targetBytes = Math.max(2, Math.floor((inRate * ttsScheduleChunkMs) / 1000) * 2);
-            if (ttsPendingPcmBytesRef.current >= targetBytes) void flushPendingTts(inRate);
+            // Feed the SAB ring directly (no per-chunk port messaging).
+            writeToSharedRing(buf);
           };
 
           if (evt.data instanceof ArrayBuffer) {
@@ -628,15 +630,30 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           }
           // Ensure AudioContext exists (even if suspended).
           void ensureTtsContext(ttsSampleRateRef.current);
-          // Prepare worklet with the incoming sample rate (doesn't start audio until user gesture resumes ctx).
-          void ensureTtsWorklet(msg.sample_rate).catch(() => {});
+          // SAB ring + worklet init (requires COOP/COEP -> crossOriginIsolated).
+          try {
+            ensureSharedRing(msg.sample_rate);
+            void ensureTtsWorklet(msg.sample_rate)
+              .then((node) => {
+                node.port.postMessage({
+                  type: "init_shared",
+                  ctrl: ttsSabCtrlRef.current,
+                  audio: ttsSabAudioRef.current,
+                  audioSamples: ttsSabSamplesRef.current,
+                });
+              })
+              .catch((e) => setError(e?.message || "Failed to init AudioWorklet"));
+          } catch (e: any) {
+            setError(
+              e?.message ||
+                "SharedArrayBuffer unavailable. Ensure COOP/COEP headers are set (crossOriginIsolated=true)."
+            );
+          }
         }
         if (msg.type === "tts_end") {
           // Drain: keep playing until queue is empty; then stop the processor.
           setTtsStreamStatus("draining");
           ttsReceivingBinaryRef.current = false;
-          // Flush any remaining coalesced audio.
-          void flushPendingTts(ttsSampleRateRef.current);
           // Clear any odd-byte remainder just in case.
           ttsByteRemainderRef.current = new Uint8Array(0);
           // Tell the worklet no more input is expected; it will stop itself once drained.
