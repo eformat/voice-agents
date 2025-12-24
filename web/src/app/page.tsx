@@ -92,6 +92,8 @@ export default function Home() {
   const [ttsOutSampleRate, setTtsOutSampleRate] = useState<number>(0);
   const [ttsStreamMinBufferedMs, setTtsStreamMinBufferedMs] = useState<number>(0);
   const [ttsStreamMaxBufferedMs, setTtsStreamMaxBufferedMs] = useState<number>(0);
+  const [ttsStreamUnderruns, setTtsStreamUnderruns] = useState<number>(0);
+  const [ttsStreamRebuffers, setTtsStreamRebuffers] = useState<number>(0);
   const [ttsRecordEnabled, setTtsRecordEnabled] = useState<boolean>(true);
   const [ttsRecordedUrl, setTtsRecordedUrl] = useState<string>("");
   const [ttsRecordedFilename, setTtsRecordedFilename] = useState<string>("");
@@ -151,11 +153,9 @@ export default function Home() {
     ttsPendingPcmRef.current = [];
     ttsPendingSamplesRef.current = 0;
     ttsWorkletBufferedFramesRef.current = 0;
-    ttsWorkletUnderrunsRef.current = 0;
-    ttsWorkletRebuffersRef.current = 0;
     ttsWorkletPlayingRef.current = false;
     try {
-      ttsWorkletNodeRef.current?.port.postMessage({ type: "reset" });
+      if (resetStats) ttsWorkletNodeRef.current?.port.postMessage({ type: "reset" });
     } catch {}
     try {
       ttsWorkletNodeRef.current?.disconnect();
@@ -167,6 +167,10 @@ export default function Home() {
       ttsMaxBufferedMsRef.current = 0;
       setTtsStreamMinBufferedMs(0);
       setTtsStreamMaxBufferedMs(0);
+      ttsWorkletUnderrunsRef.current = 0;
+      ttsWorkletRebuffersRef.current = 0;
+      setTtsStreamUnderruns(0);
+      setTtsStreamRebuffers(0);
     }
     setTtsStreamStatus("idle");
   };
@@ -454,6 +458,9 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       const ms = outRate ? (bufferedFrames / outRate) * 1000 : 0;
       ttsBufferedMsRef.current = ms;
       setTtsStreamBufferedMs(ms);
+      // Keep these visible after the stream ends (idle) for debugging.
+      setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
+      setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
       // Track min/max only while actually playing (otherwise initial prebuffer would force min=0).
       if (ttsStreamStatusRef.current !== "idle" && ttsWorkletPlayingRef.current) {
         ttsMinBufferedMsRef.current = Math.min(ttsMinBufferedMsRef.current, ms);
@@ -495,6 +502,10 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           ttsMaxBufferedMsRef.current = 0;
           setTtsStreamMinBufferedMs(0);
           setTtsStreamMaxBufferedMs(0);
+          ttsWorkletUnderrunsRef.current = 0;
+          ttsWorkletRebuffersRef.current = 0;
+          setTtsStreamUnderruns(0);
+          setTtsStreamRebuffers(0);
           if (ttsRecordEnabled) {
             clearTtsRecording();
             setTtsRecordedSampleRate(msg.sample_rate);
@@ -901,8 +912,8 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             <span className="text-zinc-200">
               {ttsStreamMinBufferedMs.toFixed(0)}ms / {ttsStreamMaxBufferedMs.toFixed(0)}ms
             </span>
-            {" "} | underruns: <span className="text-zinc-200">{ttsWorkletUnderrunsRef.current}</span>
-            {" "} | rebuffers: <span className="text-zinc-200">{ttsWorkletRebuffersRef.current}</span>
+            {" "} | underruns: <span className="text-zinc-200">{ttsStreamUnderruns}</span>
+            {" "} | rebuffers: <span className="text-zinc-200">{ttsStreamRebuffers}</span>
             {" "} | chunks: <span className="text-zinc-200">{ttsStreamChunks}</span>
             {" "} | bytes: <span className="text-zinc-200">{ttsStreamBytes}</span>
             {" "} | frames: <span className="text-zinc-200">{ttsStreamFrames}</span>
