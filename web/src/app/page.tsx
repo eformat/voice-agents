@@ -103,93 +103,39 @@ export default function Home() {
 
   const sampleRate = 16000;
 
-  // ===== Streaming TTS player (WebAudio + ScriptProcessor ring buffer) =====
+  // ===== Streaming TTS player (WebAudio scheduling) =====
   const ttsCtxRef = useRef<AudioContext | null>(null);
-  const ttsProcRef = useRef<ScriptProcessorNode | null>(null);
   const ttsSampleRateRef = useRef<number>(24000);
   const ttsStartedRef = useRef<boolean>(false);
   const ttsByteRemainderRef = useRef<Uint8Array>(new Uint8Array(0));
-  const ttsPrebufferMs = 900; // more jitter tolerance; slightly higher latency but smoother speech
-  const ttsLowWaterMs = 220; // if buffered below this, pause consumption and rebuffer
-  const ttsHighWaterMs = 700; // resume consumption when buffer refills above this
+  const ttsPrebufferMs = 650; // scheduling prebuffer; balances latency vs smoothness
 
-  // Resampler state (continuous across chunks) to avoid cumulative drift.
-  const ttsResampleRemainderRef = useRef<Float32Array>(new Float32Array(0));
-  const ttsResamplePosRef = useRef<number>(0); // fractional index into remainder+new input
+  // Scheduled playback state.
+  const ttsNextPlayTimeRef = useRef<number>(0);
+  const ttsSourcesRef = useRef<AudioBufferSourceNode[]>([]);
 
-  // Ring buffer at output sample rate (AudioContext sampleRate).
-  const ttsRingRef = useRef<Float32Array | null>(null);
-  const ttsRingSizeRef = useRef<number>(0);
-  const ttsRingWriteRef = useRef<number>(0);
-  const ttsRingReadRef = useRef<number>(0);
-  const ttsRingCountRef = useRef<number>(0); // available frames
-  const ttsBufferedMsRef = useRef<number>(0);
-  const ttsRebufferingRef = useRef<boolean>(false);
+  const ttsBufferedMsRef = useRef<number>(0); // updated by interval for UI + min/max
   const ttsMinBufferedMsRef = useRef<number>(Number.POSITIVE_INFINITY);
   const ttsMaxBufferedMsRef = useRef<number>(0);
   const ttsStreamStatusRef = useRef<string>("idle");
 
-  const ttsBufferedFrames = () => ttsRingCountRef.current;
-
   const _ttsOutRate = () => ttsCtxRef.current?.sampleRate ?? ttsSampleRateRef.current;
 
-  const ensureTtsRing = (outRate: number) => {
-    // Keep a few seconds of audio to absorb backend/network jitter.
-    const seconds = 8;
-    const size = Math.max(1, Math.floor(outRate * seconds));
-    if (ttsRingRef.current && ttsRingSizeRef.current === size) return;
-
-    ttsRingRef.current = new Float32Array(size);
-    ttsRingSizeRef.current = size;
-    ttsRingWriteRef.current = 0;
-    ttsRingReadRef.current = 0;
-    ttsRingCountRef.current = 0;
-  };
-
-  const ttsRingPush = (samples: Float32Array) => {
-    const outRate = _ttsOutRate();
-    ensureTtsRing(outRate);
-    const ring = ttsRingRef.current!;
-    const size = ttsRingSizeRef.current;
-    if (!size) return;
-
-    // If a single chunk is larger than capacity, keep only the tail.
-    let src = samples;
-    if (src.length >= size) src = src.subarray(src.length - size);
-
-    // If we'd overflow, drop the oldest audio (advance read pointer).
-    const overflow = ttsRingCountRef.current + src.length - size;
-    if (overflow > 0) {
-      ttsRingReadRef.current = (ttsRingReadRef.current + overflow) % size;
-      ttsRingCountRef.current = Math.max(0, ttsRingCountRef.current - overflow);
-    }
-
-    // Write with wraparound.
-    let w = ttsRingWriteRef.current;
-    const first = Math.min(src.length, size - w);
-    ring.set(src.subarray(0, first), w);
-    const remain = src.length - first;
-    if (remain > 0) ring.set(src.subarray(first), 0);
-    ttsRingWriteRef.current = (w + src.length) % size;
-    ttsRingCountRef.current += src.length;
-  };
-
   const stopTtsStream = () => {
-    try {
-      ttsProcRef.current?.disconnect();
-    } catch {}
-    ttsProcRef.current = null;
     ttsStartedRef.current = false;
     ttsByteRemainderRef.current = new Uint8Array(0);
-    ttsResampleRemainderRef.current = new Float32Array(0);
-    ttsResamplePosRef.current = 0;
-    ttsRingRef.current = null;
-    ttsRingSizeRef.current = 0;
-    ttsRingWriteRef.current = 0;
-    ttsRingReadRef.current = 0;
-    ttsRingCountRef.current = 0;
     ttsBufferedMsRef.current = 0;
-    ttsRebufferingRef.current = false;
+    ttsNextPlayTimeRef.current = 0;
+    // Stop any scheduled sources.
+    for (const s of ttsSourcesRef.current) {
+      try {
+        s.stop(0);
+      } catch {}
+      try {
+        s.disconnect();
+      } catch {}
+    }
+    ttsSourcesRef.current = [];
     ttsMinBufferedMsRef.current = Number.POSITIVE_INFINITY;
     ttsMaxBufferedMsRef.current = 0;
     setTtsStreamBufferedMs(0);
@@ -221,12 +167,11 @@ export default function Home() {
   useEffect(() => {
     const id = window.setInterval(() => {
       const ctx = ttsCtxRef.current;
-      const sr = ctx?.sampleRate ?? _ttsOutRate();
-      // Prefer the fast ref written by the audio callback; fall back to computed.
       const ms =
-        ttsStartedRef.current && sr
-          ? ttsBufferedMsRef.current || (ttsBufferedFrames() / sr) * 1000
-          : (ttsBufferedFrames() / sr) * 1000;
+        ctx && ttsStartedRef.current
+          ? Math.max(0, (ttsNextPlayTimeRef.current - ctx.currentTime) * 1000)
+          : 0;
+      ttsBufferedMsRef.current = ms;
       setTtsStreamBufferedMs(ms);
       if (ttsStreamStatusRef.current !== "idle") {
         ttsMinBufferedMsRef.current = Math.min(ttsMinBufferedMsRef.current, ms);
@@ -239,68 +184,6 @@ export default function Home() {
     }, 200);
     return () => window.clearInterval(id);
   }, []);
-
-  const startTtsIfReady = async (forceStart: boolean = false) => {
-    if (ttsStartedRef.current) return;
-    const outSr = _ttsOutRate();
-    const bufferedMs = (ttsBufferedFrames() / outSr) * 1000;
-    setTtsStreamBufferedMs(bufferedMs);
-    if (!forceStart && bufferedMs < ttsPrebufferMs) return;
-
-    const ctx = await ensureTtsContext(ttsSampleRateRef.current);
-    if (ctx.state !== "running") await ctx.resume().catch(() => {});
-
-    ensureTtsRing(ctx.sampleRate);
-    const proc = ctx.createScriptProcessor(4096, 0, 1);
-    proc.onaudioprocess = (e) => {
-      const out = e.outputBuffer.getChannelData(0);
-      const frames = out.length;
-      const srLocal = ctx.sampleRate;
-
-      const available = ttsRingCountRef.current;
-      const bufferedMsNow = (available / srLocal) * 1000;
-      ttsBufferedMsRef.current = bufferedMsNow;
-
-      // Jitter buffer: pause consumption when low, resume when refilled.
-      if (ttsRebufferingRef.current) {
-        if (bufferedMsNow >= ttsHighWaterMs) {
-          ttsRebufferingRef.current = false;
-        } else {
-          out.fill(0);
-          return;
-        }
-      } else if (bufferedMsNow < ttsLowWaterMs) {
-        ttsRebufferingRef.current = true;
-        out.fill(0);
-        return;
-      }
-
-      const ring = ttsRingRef.current;
-      const size = ttsRingSizeRef.current;
-      if (!ring || !size || ttsRingCountRef.current === 0) {
-        out.fill(0);
-        ttsRebufferingRef.current = true;
-        return;
-      }
-
-      const toRead = Math.min(frames, ttsRingCountRef.current);
-      let r = ttsRingReadRef.current;
-      const first = Math.min(toRead, size - r);
-      out.set(ring.subarray(r, r + first), 0);
-      const remain = toRead - first;
-      if (remain > 0) out.set(ring.subarray(0, remain), first);
-      if (toRead < frames) out.fill(0, toRead);
-
-      ttsRingReadRef.current = (r + toRead) % size;
-      ttsRingCountRef.current -= toRead;
-      if (toRead < frames) ttsRebufferingRef.current = true;
-    };
-
-    ttsProcRef.current = proc;
-    proc.connect(ctx.destination);
-    ttsStartedRef.current = true;
-    setTtsStreamStatus("playing");
-  };
 
   const connect = () => {
     setError("");
@@ -326,14 +209,13 @@ export default function Home() {
           setTtsStreamChunks(0);
           setTtsStreamBytes(0);
           setTtsStreamFrames(0);
-          ttsResampleRemainderRef.current = new Float32Array(0);
-          ttsResamplePosRef.current = 0;
           ttsMinBufferedMsRef.current = Number.POSITIVE_INFINITY;
           ttsMaxBufferedMsRef.current = 0;
           setTtsStreamMinBufferedMs(0);
           setTtsStreamMaxBufferedMs(0);
-          // Allocate the output-rate ring early (even if context is suspended).
-          void ensureTtsContext(ttsSampleRateRef.current).then((ctx) => ensureTtsRing(ctx.sampleRate));
+          ttsNextPlayTimeRef.current = 0;
+          // Ensure AudioContext exists (even if suspended).
+          void ensureTtsContext(ttsSampleRateRef.current);
         }
         if (msg.type === "tts_chunk") {
           try {
@@ -359,61 +241,44 @@ export default function Home() {
               const i16 = bytesToInt16(frameBytes); // PCM @ ttsSampleRateRef
               if (i16.length) {
                 const inRate = ttsSampleRateRef.current;
-                const outRate = _ttsOutRate();
-                // Convert to float [-1, 1]
-                const newF32 = new Float32Array(i16.length);
-                for (let i = 0; i < i16.length; i++) newF32[i] = i16[i] / 32768;
+                const f32 = new Float32Array(i16.length);
+                for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
 
-                // Concatenate remainder + new input (kept small, typically 1-2 samples).
-                const remIn = ttsResampleRemainderRef.current;
-                const inBuf =
-                  remIn.length > 0 ? new Float32Array(remIn.length + newF32.length) : newF32;
-                if (remIn.length > 0) {
-                  inBuf.set(remIn, 0);
-                  inBuf.set(newF32, remIn.length);
-                }
-
-                // Stateful linear resample (continuous phase across chunks).
-                const step = inRate / outRate; // input samples per output sample
-                let pos = ttsResamplePosRef.current;
-
-                if (inBuf.length >= 2) {
-                  const available = inBuf.length - 1 - pos;
-                  const outCount = available > 0 ? Math.floor(available / step) + 1 : 0;
-                  if (outCount > 0) {
-                    const out = new Float32Array(outCount);
-                    for (let i = 0; i < outCount; i++) {
-                      const idx = Math.floor(pos);
-                      const frac = pos - idx;
-                      const s0 = inBuf[idx];
-                      const s1 = inBuf[idx + 1];
-                      out[i] = s0 + (s1 - s0) * frac;
-                      pos += step;
-                    }
-                    ttsRingPush(out);
-                    setTtsStreamFrames((n) => n + out.length);
-
-                    const consumedInt = Math.floor(pos);
-                    pos = pos - consumedInt;
-                    // Keep what's left (usually ~2 samples) for next chunk.
-                    ttsResampleRemainderRef.current = inBuf.subarray(consumedInt);
-                    ttsResamplePosRef.current = pos;
-                  } else {
-                    // Not enough to produce output; keep as remainder.
-                    ttsResampleRemainderRef.current = inBuf;
-                    ttsResamplePosRef.current = pos;
+                void ensureTtsContext(inRate).then((ctx) => {
+                  // Establish a scheduling base time so we prebuffer before first audio plays.
+                  if (!ttsStartedRef.current) {
+                    ttsStartedRef.current = true;
+                    const base = ctx.currentTime + ttsPrebufferMs / 1000;
+                    ttsNextPlayTimeRef.current = Math.max(ttsNextPlayTimeRef.current || 0, base);
+                    setTtsStreamStatus("playing");
                   }
-                } else {
-                  // Not enough input for interpolation yet.
-                  ttsResampleRemainderRef.current = inBuf;
-                  ttsResamplePosRef.current = pos;
-                }
+
+                  const buf = ctx.createBuffer(1, f32.length, inRate);
+                  buf.copyToChannel(f32, 0);
+                  const src = ctx.createBufferSource();
+                  src.buffer = buf;
+                  src.connect(ctx.destination);
+
+                  const startAt = Math.max(ttsNextPlayTimeRef.current, ctx.currentTime);
+                  src.start(startAt);
+                  ttsNextPlayTimeRef.current = startAt + buf.duration;
+
+                  // Keep list for Stop playback; prune on end.
+                  ttsSourcesRef.current.push(src);
+                  src.onended = () => {
+                    const arr = ttsSourcesRef.current;
+                    const idx = arr.indexOf(src);
+                    if (idx >= 0) arr.splice(idx, 1);
+                  };
+
+                  // For stats, count *scheduled output frames* (approx).
+                  const outFrames = Math.max(1, Math.round((f32.length * ctx.sampleRate) / inRate));
+                  setTtsStreamFrames((n) => n + outFrames);
+                });
               }
             }
             ttsByteRemainderRef.current = combined.subarray(evenLen);
             setTtsStreamChunks((n) => n + 1);
-            setTtsStreamBufferedMs((ttsBufferedFrames() / _ttsOutRate()) * 1000);
-            void startTtsIfReady(false);
           } catch (e: any) {
             setError(e?.message || "Failed to decode TTS chunk");
           }
@@ -421,12 +286,13 @@ export default function Home() {
         if (msg.type === "tts_end") {
           // Drain: keep playing until queue is empty; then stop the processor.
           setTtsStreamStatus("draining");
-          // If this was a short utterance and we never hit prebuffer, start anyway.
-          if (!ttsStartedRef.current && ttsBufferedFrames() > 0) void startTtsIfReady(true);
           const check = setInterval(() => {
-            const sr = _ttsOutRate();
-            const ms = (ttsBufferedFrames() / sr) * 1000;
-            if (ttsStartedRef.current && ttsProcRef.current && ms <= 5) {
+            const ctx = ttsCtxRef.current;
+            const ms =
+              ctx && ttsStartedRef.current
+                ? Math.max(0, (ttsNextPlayTimeRef.current - ctx.currentTime) * 1000)
+                : 0;
+            if (ttsStartedRef.current && ms <= 5) {
               stopTtsStream();
               clearInterval(check);
             }
@@ -563,9 +429,6 @@ export default function Home() {
       disconnect();
       mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
       audioCtxRef.current?.close();
-      try {
-        ttsProcRef.current?.disconnect();
-      } catch {}
       ttsCtxRef.current?.close();
     };
   }, []);
