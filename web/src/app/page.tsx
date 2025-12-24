@@ -234,6 +234,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     this.rebuffers = 0;
     this.playing = false;
     this.enabled = true;
+    this.eos = false;
     this.startFrames = Math.floor(this.outRate * 0.9);
     this.lowFrames = Math.floor(this.outRate * 0.25);
     this.highFrames = Math.floor(this.outRate * 0.75);
@@ -245,15 +246,19 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
       if (msg.type === "config" && typeof msg.inRate === "number") {
         this.inRate = msg.inRate;
         this.enabled = true;
+        this.eos = false;
         if (typeof msg.startFrames === "number") this.startFrames = Math.max(0, msg.startFrames|0);
         if (typeof msg.lowFrames === "number") this.lowFrames = Math.max(0, msg.lowFrames|0);
         if (typeof msg.highFrames === "number") this.highFrames = Math.max(0, msg.highFrames|0);
+      } else if (msg.type === "eos") {
+        // No more input is expected for this stream.
+        this.eos = true;
       } else if (msg.type === "stop") {
         this.enabled = false;
         this.playing = false;
       } else if (msg.type === "reset") {
         this.r = 0; this.w = 0; this.count = 0; this.underruns = 0;
-        this.rebuffers = 0; this.playing = false; this.enabled = true;
+        this.rebuffers = 0; this.playing = false; this.enabled = true; this.eos = false;
         this.rem = new Float32Array(0); this.pos = 0;
       } else if (msg.type === "push" && msg.pcm) {
         const i16 = new Int16Array(msg.pcm);
@@ -324,6 +329,17 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     const frames = out.length;
     const size = this.ringSize;
     if (!this.enabled) {
+      out.fill(0);
+      this._tick++;
+      if ((this._tick % 20) === 0) {
+        this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
+      }
+      return true;
+    }
+    // Once stream ended and buffer drained, stop processing (and stop counting underruns).
+    if (this.eos && this.count <= 0) {
+      this.enabled = false;
+      this.playing = false;
       out.fill(0);
       this._tick++;
       if ((this._tick % 20) === 0) {
@@ -482,7 +498,11 @@ registerProcessor("tts-player", TtsPlayerProcessor);
         setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
       }
       // Track min/max only while actually playing (otherwise initial prebuffer would force min=0).
-      if (ttsStreamStatusRef.current !== "idle" && ttsWorkletPlayingRef.current) {
+      if (
+        ttsStreamStatusRef.current !== "idle" &&
+        ttsWorkletPlayingRef.current &&
+        bufferedFrames > 0
+      ) {
         ttsMinBufferedMsRef.current = Math.min(ttsMinBufferedMsRef.current, ms);
         ttsMaxBufferedMsRef.current = Math.max(ttsMaxBufferedMsRef.current, ms);
         setTtsStreamMinBufferedMs(
@@ -585,6 +605,10 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           setTtsStreamStatus("draining");
           // Flush any remaining coalesced audio.
           void flushPendingTts(ttsSampleRateRef.current);
+          // Tell the worklet no more input is expected; it will stop itself once drained.
+          try {
+            ttsWorkletNodeRef.current?.port.postMessage({ type: "eos" });
+          } catch {}
           // Capture a WAV of exactly what we received from the model.
           finalizeTtsRecording();
           const check = setInterval(() => {
