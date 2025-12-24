@@ -115,6 +115,10 @@ export default function Home() {
   const ttsHighWaterMs = 400;
   // Prevent rapid pause/resume "ticking" by holding a minimum pause duration once we rebuffer.
   const ttsRebufferHoldMs = 140;
+  // Prevent frequent tiny pauses by enforcing a minimum time between rebuffers.
+  // During cooldown we keep playing unless buffer becomes critically low.
+  const ttsRebufferCooldownMs = 220;
+  const ttsEmergencyLowMs = 10;
 
   const ttsWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const ttsWorkletModuleUrlRef = useRef<string>("");
@@ -273,6 +277,9 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     this.eos = false;
     this.holdFrames = 0;
     this.holdUntil = 0;
+    this.cooldownFrames = 0;
+    this.cooldownUntil = 0;
+    this.emergencyLowFrames = 0;
     this.outCursor = 0;
     this.startFrames = Math.floor(this.outRate * 0.9);
     this.lowFrames = Math.floor(this.outRate * 0.25);
@@ -290,6 +297,8 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
         if (typeof msg.lowFrames === "number") this.lowFrames = Math.max(0, msg.lowFrames|0);
         if (typeof msg.highFrames === "number") this.highFrames = Math.max(0, msg.highFrames|0);
         if (typeof msg.holdFrames === "number") this.holdFrames = Math.max(0, msg.holdFrames|0);
+        if (typeof msg.cooldownFrames === "number") this.cooldownFrames = Math.max(0, msg.cooldownFrames|0);
+        if (typeof msg.emergencyLowFrames === "number") this.emergencyLowFrames = Math.max(0, msg.emergencyLowFrames|0);
       } else if (msg.type === "init_shared" && msg.ctrl && msg.audio && typeof msg.audioSamples === "number") {
         this.sharedCtrl = msg.ctrl;
         this.sharedAudio = msg.audio;
@@ -307,6 +316,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
         this.underruns = 0;
         this.rebuffers = 0; this.playing = false; this.enabled = true; this.eos = false;
         this.holdUntil = 0;
+        this.cooldownUntil = 0;
         this.outCursor = 0;
         this.rem = new Float32Array(0); this.pos = 0;
       }
@@ -363,6 +373,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
         if (!holdActive) {
           this.playing = true;
           this.startedOnce = true;
+          if (this.cooldownFrames > 0) this.cooldownUntil = this.outCursor + this.cooldownFrames;
         }
       } else {
         out.fill(0);
@@ -379,6 +390,12 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     }
     const bufferedFramesNow = Math.floor((avail0 * this.outRate) / this.inRate);
     if (this.lowFrames > 0 && bufferedFramesNow < this.lowFrames) {
+      const inCooldown = this.cooldownFrames > 0 && this.outCursor < this.cooldownUntil;
+      const emergency = this.emergencyLowFrames > 0 && bufferedFramesNow <= this.emergencyLowFrames;
+      if (inCooldown && !emergency) {
+        // During cooldown we prefer to keep playing (fewer pauses). If we truly starve, we'll
+        // hit emergency and pause, or ultimately underrun.
+      } else {
       this.playing = false;
       this.rebuffers++;
       if (this.holdFrames > 0) this.holdUntil = this.outCursor + this.holdFrames;
@@ -388,6 +405,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
         this.port.postMessage({ type: "stats", bufferedFrames: bufferedFramesNow, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
       }
       return true;
+      }
     }
     // If we were paused and refilled enough, resume.
     if (!this.playing && this.highFrames > 0 && bufferedFramesNow >= this.highFrames) {
@@ -468,7 +486,18 @@ registerProcessor("tts-player", TtsPlayerProcessor);
     const lowFrames = Math.max(0, Math.floor((ctx.sampleRate * ttsLowWaterMs) / 1000));
     const highFrames = Math.max(lowFrames, Math.floor((ctx.sampleRate * ttsHighWaterMs) / 1000));
     const holdFrames = Math.max(0, Math.floor((ctx.sampleRate * ttsRebufferHoldMs) / 1000));
-    node.port.postMessage({ type: "config", inRate, startFrames, lowFrames, highFrames, holdFrames });
+    const cooldownFrames = Math.max(0, Math.floor((ctx.sampleRate * ttsRebufferCooldownMs) / 1000));
+    const emergencyLowFrames = Math.max(0, Math.floor((ctx.sampleRate * ttsEmergencyLowMs) / 1000));
+    node.port.postMessage({
+      type: "config",
+      inRate,
+      startFrames,
+      lowFrames,
+      highFrames,
+      holdFrames,
+      cooldownFrames,
+      emergencyLowFrames,
+    });
     ttsWorkletNodeRef.current = node;
     return node;
   };
