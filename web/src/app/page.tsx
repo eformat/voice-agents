@@ -109,10 +109,10 @@ export default function Home() {
   const ttsStartedRef = useRef<boolean>(false);
   const ttsByteRemainderRef = useRef<Uint8Array>(new Uint8Array(0));
   const ttsPrebufferMs = 2400; // prebuffer before starting playback to absorb jitter
-  // Mid-stream rebuffering was causing audible "chops" even when the ring buffer never truly underruns.
-  // Disable it and rely on actual underruns (zeros) as the only failure mode.
-  const ttsLowWaterMs = 0;
-  const ttsHighWaterMs = 0;
+  // Micro rebuffer gate (does not increase initial delay): pause when dangerously low, resume quickly.
+  // This trades "choppy clicks" (underruns) for short pauses.
+  const ttsLowWaterMs = 50;
+  const ttsHighWaterMs = 250;
 
   const ttsWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const ttsWorkletModuleUrlRef = useRef<string>("");
@@ -266,6 +266,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     this.underruns = 0;
     this.rebuffers = 0;
     this.playing = false;
+    this.startedOnce = false;
     this.enabled = true;
     this.eos = false;
     this.startFrames = Math.floor(this.outRate * 0.9);
@@ -346,8 +347,10 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     // If we drop below lowFrames, pause until we refill above highFrames.
     if (!this.playing) {
       const bufferedFrames = Math.floor((avail0 * this.outRate) / this.inRate);
-      if (bufferedFrames >= this.startFrames || (this.startFrames === 0 && bufferedFrames > 0)) {
+      const startThreshold = this.startedOnce && this.highFrames > 0 ? this.highFrames : this.startFrames;
+      if (bufferedFrames >= startThreshold || (startThreshold === 0 && bufferedFrames > 0)) {
         this.playing = true;
+        this.startedOnce = true;
       } else {
         out.fill(0);
         this._tick++;
@@ -358,7 +361,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
       }
     }
     const bufferedFramesNow = Math.floor((avail0 * this.outRate) / this.inRate);
-    if (bufferedFramesNow < this.lowFrames) {
+    if (this.lowFrames > 0 && bufferedFramesNow < this.lowFrames) {
       this.playing = false;
       this.rebuffers++;
       out.fill(0);
@@ -369,7 +372,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
       return true;
     }
     // If we were paused and refilled enough, resume.
-    if (!this.playing && bufferedFramesNow >= this.highFrames) {
+    if (!this.playing && this.highFrames > 0 && bufferedFramesNow >= this.highFrames) {
       this.playing = true;
     }
     // Resample directly from shared input ring into output.
