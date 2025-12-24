@@ -140,6 +140,10 @@ export default function Home() {
   const ttsRecordedBytesLenRef = useRef<number>(0);
   const ttsStreamBytesRef = useRef<number>(0);
   const ttsStreamChunksRef = useRef<number>(0);
+  const ttsStreamFramesRef = useRef<number>(0);
+  const ttsRxStartedAtMsRef = useRef<number>(0);
+  const ttsRxInSamplesRef = useRef<number>(0);
+  const [ttsGenRealtimeX, setTtsGenRealtimeX] = useState<number>(0);
 
   const _ttsOutRate = () => ttsCtxRef.current?.sampleRate ?? ttsSampleRateRef.current;
 
@@ -536,10 +540,19 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       // Throttle stats updates: updating React state per audio frame can cause main-thread stalls.
       setTtsStreamBytes(ttsStreamBytesRef.current);
       setTtsStreamChunks(ttsStreamChunksRef.current);
+      setTtsStreamFrames(ttsStreamFramesRef.current);
       // Keep these visible after the stream ends (idle) for debugging.
       if (ttsStreamStatusRef.current !== "idle" || ttsWorkletNodeRef.current) {
         setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
         setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
+      }
+      // Generation speed: (audio seconds produced) / (wall clock seconds elapsed)
+      if (ttsRxStartedAtMsRef.current > 0 && ttsSampleRateRef.current > 0) {
+        const elapsedS = Math.max(0.001, (Date.now() - ttsRxStartedAtMsRef.current) / 1000);
+        const audioS = ttsRxInSamplesRef.current / ttsSampleRateRef.current;
+        setTtsGenRealtimeX(audioS / elapsedS);
+      } else {
+        setTtsGenRealtimeX(0);
       }
       // Track min/max only while actually playing (otherwise initial prebuffer would force min=0).
       if (
@@ -582,6 +595,11 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             if (!len) return;
             ttsStreamBytesRef.current += len;
             ttsStreamChunksRef.current += 1;
+            const inRate = ttsSampleRateRef.current || 24000;
+            const outRate = ttsCtxRef.current?.sampleRate ?? 48000;
+            const inSamples = Math.floor(len / 2);
+            ttsRxInSamplesRef.current += inSamples;
+            ttsStreamFramesRef.current += Math.round((inSamples * outRate) / inRate);
 
             // Recording: keep a copy so we can transfer the original buffer to the worklet.
             if (ttsRecordEnabled) {
@@ -613,6 +631,9 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           setTtsStreamStatus("buffering");
           ttsStreamChunksRef.current = 0;
           ttsStreamBytesRef.current = 0;
+          ttsStreamFramesRef.current = 0;
+          ttsRxStartedAtMsRef.current = Date.now();
+          ttsRxInSamplesRef.current = 0;
           setTtsStreamChunks(0);
           setTtsStreamBytes(0);
           setTtsStreamFrames(0);
@@ -986,6 +1007,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             </span>
             {" "} | underruns: <span className="text-zinc-200">{ttsStreamUnderruns}</span>
             {" "} | rebuffers: <span className="text-zinc-200">{ttsStreamRebuffers}</span>
+            {" "} | gen x: <span className="text-zinc-200">{ttsGenRealtimeX.toFixed(2)}</span>
             {" "} | chunks: <span className="text-zinc-200">{ttsStreamChunks}</span>
             {" "} | bytes: <span className="text-zinc-200">{ttsStreamBytes}</span>
             {" "} | frames: <span className="text-zinc-200">{ttsStreamFrames}</span>
