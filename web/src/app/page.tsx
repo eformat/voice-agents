@@ -107,9 +107,13 @@ export default function Home() {
   const ttsSampleRateRef = useRef<number>(24000);
   const ttsStartedRef = useRef<boolean>(false);
   const ttsByteRemainderRef = useRef<Uint8Array>(new Uint8Array(0));
-  const ttsPrebufferMs = 550; // add more jitter tolerance; better UX than choppy speech
-  const ttsLowWaterMs = 120; // if buffered below this, pause consumption and rebuffer
-  const ttsHighWaterMs = 420; // resume consumption when buffer refills above this
+  const ttsPrebufferMs = 900; // more jitter tolerance; slightly higher latency but smoother speech
+  const ttsLowWaterMs = 220; // if buffered below this, pause consumption and rebuffer
+  const ttsHighWaterMs = 700; // resume consumption when buffer refills above this
+
+  // Resampler state (continuous across chunks) to avoid cumulative drift.
+  const ttsResampleRemainderRef = useRef<Float32Array>(new Float32Array(0));
+  const ttsResamplePosRef = useRef<number>(0); // fractional index into remainder+new input
 
   // Ring buffer at output sample rate (AudioContext sampleRate).
   const ttsRingRef = useRef<Float32Array | null>(null);
@@ -172,6 +176,8 @@ export default function Home() {
     ttsProcRef.current = null;
     ttsStartedRef.current = false;
     ttsByteRemainderRef.current = new Uint8Array(0);
+    ttsResampleRemainderRef.current = new Float32Array(0);
+    ttsResamplePosRef.current = 0;
     ttsRingRef.current = null;
     ttsRingSizeRef.current = 0;
     ttsRingWriteRef.current = 0;
@@ -299,6 +305,8 @@ export default function Home() {
           setTtsStreamChunks(0);
           setTtsStreamBytes(0);
           setTtsStreamFrames(0);
+          ttsResampleRemainderRef.current = new Float32Array(0);
+          ttsResamplePosRef.current = 0;
           // Allocate the output-rate ring early (even if context is suspended).
           void ensureTtsContext(ttsSampleRateRef.current).then((ctx) => ensureTtsRing(ctx.sampleRate));
         }
@@ -327,19 +335,54 @@ export default function Home() {
               if (i16.length) {
                 const inRate = ttsSampleRateRef.current;
                 const outRate = _ttsOutRate();
-                const outLen = Math.max(1, Math.round((i16.length * outRate) / inRate));
-                const out = new Float32Array(outLen);
-                const ratio = inRate / outRate;
-                for (let i = 0; i < outLen; i++) {
-                  const pos = i * ratio;
-                  const idx = Math.floor(pos);
-                  const frac = pos - idx;
-                  const s0 = i16[Math.min(idx, i16.length - 1)] / 32768;
-                  const s1 = i16[Math.min(idx + 1, i16.length - 1)] / 32768;
-                  out[i] = s0 + (s1 - s0) * frac;
+                // Convert to float [-1, 1]
+                const newF32 = new Float32Array(i16.length);
+                for (let i = 0; i < i16.length; i++) newF32[i] = i16[i] / 32768;
+
+                // Concatenate remainder + new input (kept small, typically 1-2 samples).
+                const remIn = ttsResampleRemainderRef.current;
+                const inBuf =
+                  remIn.length > 0 ? new Float32Array(remIn.length + newF32.length) : newF32;
+                if (remIn.length > 0) {
+                  inBuf.set(remIn, 0);
+                  inBuf.set(newF32, remIn.length);
                 }
-                ttsRingPush(out);
-                setTtsStreamFrames((n) => n + out.length);
+
+                // Stateful linear resample (continuous phase across chunks).
+                const step = inRate / outRate; // input samples per output sample
+                let pos = ttsResamplePosRef.current;
+
+                if (inBuf.length >= 2) {
+                  const available = inBuf.length - 1 - pos;
+                  const outCount = available > 0 ? Math.floor(available / step) + 1 : 0;
+                  if (outCount > 0) {
+                    const out = new Float32Array(outCount);
+                    for (let i = 0; i < outCount; i++) {
+                      const idx = Math.floor(pos);
+                      const frac = pos - idx;
+                      const s0 = inBuf[idx];
+                      const s1 = inBuf[idx + 1];
+                      out[i] = s0 + (s1 - s0) * frac;
+                      pos += step;
+                    }
+                    ttsRingPush(out);
+                    setTtsStreamFrames((n) => n + out.length);
+
+                    const consumedInt = Math.floor(pos);
+                    pos = pos - consumedInt;
+                    // Keep what's left (usually ~2 samples) for next chunk.
+                    ttsResampleRemainderRef.current = inBuf.subarray(consumedInt);
+                    ttsResamplePosRef.current = pos;
+                  } else {
+                    // Not enough to produce output; keep as remainder.
+                    ttsResampleRemainderRef.current = inBuf;
+                    ttsResamplePosRef.current = pos;
+                  }
+                } else {
+                  // Not enough input for interpolation yet.
+                  ttsResampleRemainderRef.current = inBuf;
+                  ttsResamplePosRef.current = pos;
+                }
               }
             }
             ttsByteRemainderRef.current = combined.subarray(evenLen);
@@ -358,7 +401,6 @@ export default function Home() {
           const check = setInterval(() => {
             const sr = _ttsOutRate();
             const ms = (ttsBufferedFrames() / sr) * 1000;
-            setTtsStreamBufferedMs(ms);
             if (ttsStartedRef.current && ttsProcRef.current && ms <= 5) {
               stopTtsStream();
               clearInterval(check);
