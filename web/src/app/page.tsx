@@ -117,7 +117,7 @@ export default function Home() {
   const ttsRebufferHoldMs = 140;
   // Prevent frequent tiny pauses by enforcing a minimum time between rebuffers.
   // During cooldown we keep playing unless buffer becomes critically low.
-  const ttsRebufferCooldownMs = 1200;
+  const ttsRebufferCooldownMs = 1500;
   const ttsEmergencyLowMs = 10;
 
   const ttsWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
