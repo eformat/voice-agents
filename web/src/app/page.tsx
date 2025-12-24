@@ -73,6 +73,14 @@ function bytesToInt16(bytes: Uint8Array): Int16Array {
   return new Int16Array(buf);
 }
 
+function bytesToInt16View(bytes: Uint8Array): Int16Array {
+  // Fast path: avoid copying when we have even-sized, aligned buffers.
+  if (bytes.byteLength % 2 === 0 && bytes.byteOffset % 2 === 0) {
+    return new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2);
+  }
+  return bytesToInt16(bytes);
+}
+
 export default function Home() {
   const [wsUrl, setWsUrl] = useState("ws://127.0.0.1:8765");
   const [connected, setConnected] = useState(false);
@@ -143,6 +151,8 @@ export default function Home() {
   // Recording (capture exactly what we received from the model, before browser resampling).
   const ttsRecordedChunksRef = useRef<Int16Array[]>([]);
   const ttsRecordedSamplesRef = useRef<number>(0);
+  const ttsStreamBytesRef = useRef<number>(0);
+  const ttsStreamChunksRef = useRef<number>(0);
 
   const _ttsOutRate = () => ttsCtxRef.current?.sampleRate ?? ttsSampleRateRef.current;
 
@@ -493,6 +503,9 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       const ms = outRate ? (bufferedFrames / outRate) * 1000 : 0;
       ttsBufferedMsRef.current = ms;
       setTtsStreamBufferedMs(ms);
+      // Throttle stats updates: updating React state per audio frame can cause main-thread stalls.
+      setTtsStreamBytes(ttsStreamBytesRef.current);
+      setTtsStreamChunks(ttsStreamChunksRef.current);
       // Keep these visible after the stream ends (idle) for debugging.
       if (ttsStreamStatusRef.current !== "idle" || ttsWorkletNodeRef.current) {
         setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
@@ -535,7 +548,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
         if (typeof evt.data !== "string") {
           if (!ttsReceivingBinaryRef.current) return;
           const handleBytes = (bytes: Uint8Array) => {
-            setTtsStreamBytes((n) => n + bytes.length);
+            ttsStreamBytesRef.current += bytes.length;
             const rem = ttsByteRemainderRef.current;
             let combined: Uint8Array;
             if (rem.length) {
@@ -548,7 +561,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             const evenLen = combined.length - (combined.length % 2);
             if (evenLen > 0) {
               const frameBytes = combined.subarray(0, evenLen);
-              const i16 = bytesToInt16(frameBytes);
+              const i16 = bytesToInt16View(frameBytes);
               if (i16.length) {
                 const inRate = ttsSampleRateRef.current;
                 if (ttsRecordEnabled) {
@@ -562,7 +575,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
               }
             }
             ttsByteRemainderRef.current = combined.subarray(evenLen);
-            setTtsStreamChunks((n) => n + 1);
+            ttsStreamChunksRef.current += 1;
           };
 
           if (evt.data instanceof ArrayBuffer) {
@@ -583,6 +596,8 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           ttsSampleRateRef.current = msg.sample_rate;
           ttsReceivingBinaryRef.current = true;
           setTtsStreamStatus("buffering");
+          ttsStreamChunksRef.current = 0;
+          ttsStreamBytesRef.current = 0;
           setTtsStreamChunks(0);
           setTtsStreamBytes(0);
           setTtsStreamFrames(0);
@@ -609,7 +624,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             // Ensure WebAudio has been created/resumed from a user gesture.
             // If not, we still buffer, but playback may be blocked by autoplay policy.
             const bytes = base64ToBytes(msg.audio_b64);
-            setTtsStreamBytes((n) => n + bytes.length);
+            ttsStreamBytesRef.current += bytes.length;
 
             // Handle odd chunk boundaries: stitch bytes so we always form int16 frames.
             const rem = ttsByteRemainderRef.current;
@@ -625,7 +640,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             const evenLen = combined.length - (combined.length % 2);
             if (evenLen > 0) {
               const frameBytes = combined.subarray(0, evenLen);
-              const i16 = bytesToInt16(frameBytes); // PCM @ ttsSampleRateRef
+              const i16 = bytesToInt16View(frameBytes); // PCM @ ttsSampleRateRef
               if (i16.length) {
                 const inRate = ttsSampleRateRef.current;
                 if (ttsRecordEnabled) {
@@ -644,7 +659,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
               }
             }
             ttsByteRemainderRef.current = combined.subarray(evenLen);
-            setTtsStreamChunks((n) => n + 1);
+            ttsStreamChunksRef.current += 1;
           } catch (e: any) {
             setError(e?.message || "Failed to decode TTS chunk");
           }
