@@ -6,9 +6,7 @@ import { useEffect, useRef, useState } from "react";
 type WsMsg =
   | { type: "transcript"; text: string }
   | { type: "tts_begin"; format: "pcm_s16le"; sample_rate: number }
-  | { type: "tts_chunk"; seq: number; audio_b64: string }
   | { type: "tts_end" }
-  | { type: "tts_audio"; format: "wav"; sample_rate: number; audio_b64: string }
   | {
       type: "graph_result";
       pizza_type: string;
@@ -55,19 +53,6 @@ async function blobToBase64(blob: Blob): Promise<string> {
   return btoa(binary);
 }
 
-async function base64ToBlob(b64: string, mime: string): Promise<Blob> {
-  // Avoid `atob` size limits by using a data URL + fetch.
-  const res = await fetch(`data:${mime};base64,${b64}`);
-  return await res.blob();
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
 function bytesToInt16(bytes: Uint8Array): Int16Array {
   const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   return new Int16Array(buf);
@@ -90,8 +75,6 @@ export default function Home() {
   const [messages, setMessages] = useState<Array<{ role: string; content: string }>>([]);
   const [error, setError] = useState<string>("");
   const [textToSend, setTextToSend] = useState<string>("Can I order a pepperoni pizza?");
-  const [audioUrl, setAudioUrl] = useState<string>("");
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [ttsStreamStatus, setTtsStreamStatus] = useState<string>("idle");
   const [ttsStreamBufferedMs, setTtsStreamBufferedMs] = useState<number>(0);
   const [ttsStreamChunks, setTtsStreamChunks] = useState<number>(0);
@@ -138,9 +121,10 @@ export default function Home() {
   const ttsWorkletRebuffersRef = useRef<number>(0);
   const ttsWorkletPlayingRef = useRef<boolean>(false);
 
-  // Coalesce incoming PCM chunks to reduce postMessage overhead.
-  const ttsPendingPcmRef = useRef<Int16Array[]>([]);
-  const ttsPendingSamplesRef = useRef<number>(0);
+  // Coalesce raw PCM bytes to reduce postMessage overhead.
+  // We keep raw ArrayBuffers and transfer them to the AudioWorklet to minimize copying.
+  const ttsPendingPcmBuffersRef = useRef<ArrayBuffer[]>([]);
+  const ttsPendingPcmBytesRef = useRef<number>(0);
   const ttsScheduleChunkMs = 40; // match server WS chunking (~40ms) for smoother feeding
 
   const ttsBufferedMsRef = useRef<number>(0); // updated by interval for UI + min/max
@@ -163,8 +147,8 @@ export default function Home() {
     ttsStartedRef.current = false;
     ttsByteRemainderRef.current = new Uint8Array(0);
     ttsBufferedMsRef.current = 0;
-    ttsPendingPcmRef.current = [];
-    ttsPendingSamplesRef.current = 0;
+    ttsPendingPcmBuffersRef.current = [];
+    ttsPendingPcmBytesRef.current = 0;
     ttsWorkletBufferedFramesRef.current = 0;
     ttsWorkletPlayingRef.current = false;
     try {
@@ -463,31 +447,32 @@ registerProcessor("tts-player", TtsPlayerProcessor);
   };
 
   const flushPendingTts = async (inRate: number) => {
-    const total = ttsPendingSamplesRef.current;
-    if (!total) return;
-    const chunks = ttsPendingPcmRef.current;
-    ttsPendingPcmRef.current = [];
-    ttsPendingSamplesRef.current = 0;
-
-    const joined = new Int16Array(total);
-    let off = 0;
-    for (const c of chunks) {
-      joined.set(c, off);
-      off += c.length;
-    }
+    const totalBytes = ttsPendingPcmBytesRef.current;
+    if (!totalBytes) return;
+    const bufs = ttsPendingPcmBuffersRef.current;
+    ttsPendingPcmBuffersRef.current = [];
+    ttsPendingPcmBytesRef.current = 0;
 
     const ctx = await ensureTtsContext(inRate);
-    // Establish "started" for status; worklet will prebuffer naturally via ring.
     if (!ttsStartedRef.current) {
       ttsStartedRef.current = true;
       setTtsStreamStatus("playing");
     }
-    // Push into worklet (transfer the buffer).
     await ensureTtsWorklet(inRate);
-    ttsWorkletNodeRef.current?.port.postMessage({ type: "push", pcm: joined.buffer }, [joined.buffer as ArrayBuffer]);
 
-    // Stats: approximate output frames.
-    const outFrames = Math.max(1, Math.round((total * ctx.sampleRate) / inRate));
+    // Transfer each buffer to the worklet to avoid copying/concatenation on the main thread.
+    for (const b of bufs) {
+      try {
+        ttsWorkletNodeRef.current?.port.postMessage({ type: "push", pcm: b }, [b]);
+      } catch {
+        // Fallback: structured clone (no transfer)
+        ttsWorkletNodeRef.current?.port.postMessage({ type: "push", pcm: b });
+      }
+    }
+
+    // Stats: approximate output frames (mono int16).
+    const totalSamples = Math.floor(totalBytes / 2);
+    const outFrames = Math.max(1, Math.round((totalSamples * ctx.sampleRate) / inRate));
     setTtsStreamFrames((n) => n + outFrames);
   };
 
@@ -574,48 +559,34 @@ registerProcessor("tts-player", TtsPlayerProcessor);
         // TTS audio chunks can arrive as binary frames (ArrayBuffer) to avoid base64 overhead.
         if (typeof evt.data !== "string") {
           if (!ttsReceivingBinaryRef.current) return;
-          const handleBytes = (bytes: Uint8Array) => {
-            ttsStreamBytesRef.current += bytes.length;
-            if (ttsRecordEnabled) {
-              // Record raw WS PCM frames (zero-copy-ish): store the ArrayBuffer slice and assemble at end.
-              const ab: ArrayBuffer =
-                bytes.buffer instanceof ArrayBuffer
-                  ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-                  : new Uint8Array(bytes).slice().buffer;
-              ttsRecordedBuffersRef.current.push(ab);
-              ttsRecordedBytesLenRef.current += bytes.byteLength;
-            }
-            const rem = ttsByteRemainderRef.current;
-            let combined: Uint8Array;
-            if (rem.length) {
-              combined = new Uint8Array(rem.length + bytes.length);
-              combined.set(rem, 0);
-              combined.set(bytes, rem.length);
-            } else {
-              combined = bytes;
-            }
-            const evenLen = combined.length - (combined.length % 2);
-            if (evenLen > 0) {
-              const frameBytes = combined.subarray(0, evenLen);
-              const i16 = bytesToInt16View(frameBytes);
-              if (i16.length) {
-                const inRate = ttsSampleRateRef.current;
-                ttsPendingPcmRef.current.push(i16);
-                ttsPendingSamplesRef.current += i16.length;
-                const targetSamples = Math.max(1, Math.floor((inRate * ttsScheduleChunkMs) / 1000));
-                if (ttsPendingSamplesRef.current >= targetSamples) void flushPendingTts(inRate);
-              }
-            }
-            ttsByteRemainderRef.current = combined.subarray(evenLen);
+          const handleBuffer = (buf: ArrayBuffer) => {
+            const len = buf.byteLength;
+            if (!len) return;
+            ttsStreamBytesRef.current += len;
             ttsStreamChunksRef.current += 1;
+
+            // Recording: keep a copy so we can transfer the original buffer to the worklet.
+            if (ttsRecordEnabled) {
+              const copy = buf.slice(0);
+              ttsRecordedBuffersRef.current.push(copy);
+              ttsRecordedBytesLenRef.current += copy.byteLength;
+            }
+
+            // Feed worklet: accumulate raw PCM buffers and transfer them on flush.
+            ttsPendingPcmBuffersRef.current.push(buf);
+            ttsPendingPcmBytesRef.current += len;
+
+            const inRate = ttsSampleRateRef.current;
+            const targetBytes = Math.max(2, Math.floor((inRate * ttsScheduleChunkMs) / 1000) * 2);
+            if (ttsPendingPcmBytesRef.current >= targetBytes) void flushPendingTts(inRate);
           };
 
           if (evt.data instanceof ArrayBuffer) {
-            handleBytes(new Uint8Array(evt.data));
+            handleBuffer(evt.data);
             return;
           }
           if (evt.data instanceof Blob) {
-            void evt.data.arrayBuffer().then((buf) => handleBytes(new Uint8Array(buf)));
+            void evt.data.arrayBuffer().then((buf) => handleBuffer(buf));
             return;
           }
           return;
@@ -650,58 +621,14 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           // Prepare worklet with the incoming sample rate (doesn't start audio until user gesture resumes ctx).
           void ensureTtsWorklet(msg.sample_rate).catch(() => {});
         }
-        if (msg.type === "tts_chunk") {
-          // Backward-compatible: older server sent base64 JSON chunks.
-          try {
-            // Ensure WebAudio has been created/resumed from a user gesture.
-            // If not, we still buffer, but playback may be blocked by autoplay policy.
-            const bytes = base64ToBytes(msg.audio_b64);
-            ttsStreamBytesRef.current += bytes.length;
-
-            // Handle odd chunk boundaries: stitch bytes so we always form int16 frames.
-            const rem = ttsByteRemainderRef.current;
-            let combined: Uint8Array;
-            if (rem.length) {
-              combined = new Uint8Array(rem.length + bytes.length);
-              combined.set(rem, 0);
-              combined.set(bytes, rem.length);
-            } else {
-              combined = bytes;
-            }
-
-            const evenLen = combined.length - (combined.length % 2);
-            if (evenLen > 0) {
-              const frameBytes = combined.subarray(0, evenLen);
-              const i16 = bytesToInt16View(frameBytes); // PCM @ ttsSampleRateRef
-              if (i16.length) {
-                const inRate = ttsSampleRateRef.current;
-                if (ttsRecordEnabled) {
-                  // Legacy path: we don't have the original WS binary frames, so store sample copies.
-                  ttsRecordedChunksRef.current.push(i16.slice());
-                  ttsRecordedSamplesRef.current += i16.length;
-                }
-
-                // Coalesce PCM samples before pushing to worklet.
-                ttsPendingPcmRef.current.push(i16);
-                ttsPendingSamplesRef.current += i16.length;
-                const targetSamples = Math.max(1, Math.floor((inRate * ttsScheduleChunkMs) / 1000));
-                if (ttsPendingSamplesRef.current >= targetSamples) {
-                  void flushPendingTts(inRate);
-                }
-              }
-            }
-            ttsByteRemainderRef.current = combined.subarray(evenLen);
-            ttsStreamChunksRef.current += 1;
-          } catch (e: any) {
-            setError(e?.message || "Failed to decode TTS chunk");
-          }
-        }
         if (msg.type === "tts_end") {
           // Drain: keep playing until queue is empty; then stop the processor.
           setTtsStreamStatus("draining");
           ttsReceivingBinaryRef.current = false;
           // Flush any remaining coalesced audio.
           void flushPendingTts(ttsSampleRateRef.current);
+          // Clear any odd-byte remainder just in case.
+          ttsByteRemainderRef.current = new Uint8Array(0);
           // Tell the worklet no more input is expected; it will stop itself once drained.
           try {
             ttsWorkletNodeRef.current?.port.postMessage({ type: "eos" });
@@ -719,18 +646,6 @@ registerProcessor("tts-player", TtsPlayerProcessor);
               clearInterval(check);
             }
           }, 200);
-        }
-        if (msg.type === "tts_audio") {
-          (async () => {
-            try {
-              const blob = await base64ToBlob(msg.audio_b64, "audio/wav");
-              const url = URL.createObjectURL(blob);
-              setAudioUrl(url);
-              setTimeout(() => audioRef.current?.play().catch(() => {}), 0);
-            } catch (e: any) {
-              setError(e?.message || "Failed to decode/play TTS audio");
-            }
-          })();
         }
         if (msg.type === "graph_result") {
           setPizzaType(msg.pizza_type);
@@ -860,17 +775,6 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       ttsCtxRef.current?.close();
     };
   }, []);
-
-  // Revoke old blob URLs to avoid leaks (but don't tear down the WS connection).
-  const prevAudioUrlRef = useRef<string>("");
-  useEffect(() => {
-    const prev = prevAudioUrlRef.current;
-    if (prev && prev !== audioUrl) URL.revokeObjectURL(prev);
-    prevAudioUrlRef.current = audioUrl;
-    return () => {
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
-    };
-  }, [audioUrl]);
 
   const sendText = () => {
     setError("");
@@ -1117,10 +1021,6 @@ registerProcessor("tts-player", TtsPlayerProcessor);
                   </div>
                 )}
               </div>
-              <div className="text-xs text-zinc-500">
-                (Fallback player for non-streaming WAV responses)
-              </div>
-              <audio ref={audioRef} src={audioUrl || undefined} controls className="w-full" />
             </div>
           </details>
         </section>
