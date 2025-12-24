@@ -155,7 +155,12 @@ export default function Home() {
     ttsWorkletBufferedFramesRef.current = 0;
     ttsWorkletPlayingRef.current = false;
     try {
-      if (resetStats) ttsWorkletNodeRef.current?.port.postMessage({ type: "reset" });
+      if (resetStats) {
+        ttsWorkletNodeRef.current?.port.postMessage({ type: "reset" });
+      } else {
+        // Freeze counters after stream end so they don't keep increasing during idle silence.
+        ttsWorkletNodeRef.current?.port.postMessage({ type: "stop" });
+      }
     } catch {}
     try {
       ttsWorkletNodeRef.current?.disconnect();
@@ -228,6 +233,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     this.underruns = 0;
     this.rebuffers = 0;
     this.playing = false;
+    this.enabled = true;
     this.startFrames = Math.floor(this.outRate * 0.9);
     this.lowFrames = Math.floor(this.outRate * 0.25);
     this.highFrames = Math.floor(this.outRate * 0.75);
@@ -238,12 +244,16 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
       const msg = e.data || {};
       if (msg.type === "config" && typeof msg.inRate === "number") {
         this.inRate = msg.inRate;
+        this.enabled = true;
         if (typeof msg.startFrames === "number") this.startFrames = Math.max(0, msg.startFrames|0);
         if (typeof msg.lowFrames === "number") this.lowFrames = Math.max(0, msg.lowFrames|0);
         if (typeof msg.highFrames === "number") this.highFrames = Math.max(0, msg.highFrames|0);
+      } else if (msg.type === "stop") {
+        this.enabled = false;
+        this.playing = false;
       } else if (msg.type === "reset") {
         this.r = 0; this.w = 0; this.count = 0; this.underruns = 0;
-        this.rebuffers = 0; this.playing = false;
+        this.rebuffers = 0; this.playing = false; this.enabled = true;
         this.rem = new Float32Array(0); this.pos = 0;
       } else if (msg.type === "push" && msg.pcm) {
         const i16 = new Int16Array(msg.pcm);
@@ -313,6 +323,14 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     const out = outputs[0][0];
     const frames = out.length;
     const size = this.ringSize;
+    if (!this.enabled) {
+      out.fill(0);
+      this._tick++;
+      if ((this._tick % 20) === 0) {
+        this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
+      }
+      return true;
+    }
     // Jitter buffer gating: don't start until we have startFrames buffered.
     // If we drop below lowFrames, pause until we refill above highFrames.
     if (!this.playing) {
@@ -459,8 +477,10 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       ttsBufferedMsRef.current = ms;
       setTtsStreamBufferedMs(ms);
       // Keep these visible after the stream ends (idle) for debugging.
-      setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
-      setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
+      if (ttsStreamStatusRef.current !== "idle" || ttsWorkletNodeRef.current) {
+        setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
+        setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
+      }
       // Track min/max only while actually playing (otherwise initial prebuffer would force min=0).
       if (ttsStreamStatusRef.current !== "idle" && ttsWorkletPlayingRef.current) {
         ttsMinBufferedMsRef.current = Math.min(ttsMinBufferedMsRef.current, ms);
