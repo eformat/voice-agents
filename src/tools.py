@@ -27,7 +27,9 @@ TTS_VOICE = os.getenv("TTS_VOICE", "TTS_VOICE")
 PLAY_AUDIO = os.getenv("PLAY_AUDIO", "0").lower() in ("1", "true", "yes", "y")
 TTS_SAMPLE_RATE = int(os.getenv("TTS_SAMPLE_RATE", "24000"))
 TTS_API_KEY = os.getenv("TTS_API_KEY", os.getenv("API_KEY", ""))
-TTS_AUDIO_CHUNK_SIZE = int(os.getenv("TTS_AUDIO_CHUNK_SIZE", "20"))
+# Higgs streamed audio can arrive in fairly large bursts depending on `audio_chunk_size`.
+# A smaller default yields smoother realtime playback in the browser.
+TTS_AUDIO_CHUNK_SIZE = int(os.getenv("TTS_AUDIO_CHUNK_SIZE", "5"))
 TTS_TIMEOUT_S = float(os.getenv("TTS_TIMEOUT_S", "30"))
 TTS_VOICE_WAV = os.getenv("TTS_VOICE_WAV", "")  # optional override
 TTS_VOICE_TXT = os.getenv("TTS_VOICE_TXT", "")  # optional override

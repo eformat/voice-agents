@@ -35,6 +35,7 @@ from websockets.exceptions import ConnectionClosed
 
 from src.graph import build_graph
 from src.tools import (
+    TTS_SAMPLE_RATE,
     convert_speech_to_text,
     generate_tts_wav_b64,
     stream_tts_pcm_chunks,
@@ -126,7 +127,9 @@ async def _tts_stream(ws, text: str) -> None:
     threading.Thread(target=_producer, daemon=True).start()
 
     await ws.send(
-        json.dumps({"type": "tts_begin", "format": "pcm_s16le", "sample_rate": 24000})
+        json.dumps(
+            {"type": "tts_begin", "format": "pcm_s16le", "sample_rate": TTS_SAMPLE_RATE}
+        )
     )
     while True:
         item = await q.get()
