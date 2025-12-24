@@ -111,7 +111,7 @@ export default function Home() {
   const ttsPrebufferMs = 2000; // prebuffer before starting playback to absorb jitter
   // Micro rebuffer gate (does not increase initial delay): pause when dangerously low, resume quickly.
   // This trades "choppy clicks" (underruns) for short pauses.
-  const ttsLowWaterMs = 30;
+  const ttsLowWaterMs = 20;
   const ttsHighWaterMs = 400;
   // Prevent rapid pause/resume "ticking" by holding a minimum pause duration once we rebuffer.
   const ttsRebufferHoldMs = 140;
