@@ -109,20 +109,22 @@ export default function Home() {
 
   const sampleRate = 16000;
 
-  // ===== Streaming TTS player (WebAudio scheduling) =====
+  // ===== Streaming TTS player (AudioWorklet ring buffer) =====
   const ttsCtxRef = useRef<AudioContext | null>(null);
   const ttsSampleRateRef = useRef<number>(24000);
   const ttsStartedRef = useRef<boolean>(false);
   const ttsByteRemainderRef = useRef<Uint8Array>(new Uint8Array(0));
-  const ttsPrebufferMs = 650; // scheduling prebuffer; balances latency vs smoothness
+  const ttsPrebufferMs = 350; // worklet buffer target; keep low latency but avoid underruns
 
-  // Scheduled playback state.
-  const ttsNextPlayTimeRef = useRef<number>(0);
-  const ttsSourcesRef = useRef<AudioBufferSourceNode[]>([]);
-  // Coalesce small incoming PCM chunks into larger scheduled buffers to reduce scheduling overhead.
-  const ttsPendingChunksRef = useRef<Float32Array[]>([]);
-  const ttsPendingFramesRef = useRef<number>(0);
-  const ttsScheduleChunkMs = 250; // target size for each scheduled AudioBuffer
+  const ttsWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const ttsWorkletModuleUrlRef = useRef<string>("");
+  const ttsWorkletBufferedFramesRef = useRef<number>(0);
+  const ttsWorkletUnderrunsRef = useRef<number>(0);
+
+  // Coalesce incoming PCM chunks to reduce postMessage overhead.
+  const ttsPendingPcmRef = useRef<Int16Array[]>([]);
+  const ttsPendingSamplesRef = useRef<number>(0);
+  const ttsScheduleChunkMs = 250; // target size for each worklet push (in input sample rate)
 
   const ttsBufferedMsRef = useRef<number>(0); // updated by interval for UI + min/max
   const ttsMinBufferedMsRef = useRef<number>(Number.POSITIVE_INFINITY);
@@ -140,19 +142,17 @@ export default function Home() {
     ttsStartedRef.current = false;
     ttsByteRemainderRef.current = new Uint8Array(0);
     ttsBufferedMsRef.current = 0;
-    ttsNextPlayTimeRef.current = 0;
-    ttsPendingChunksRef.current = [];
-    ttsPendingFramesRef.current = 0;
-    // Stop any scheduled sources.
-    for (const s of ttsSourcesRef.current) {
-      try {
-        s.stop(0);
-      } catch {}
-      try {
-        s.disconnect();
-      } catch {}
-    }
-    ttsSourcesRef.current = [];
+    ttsPendingPcmRef.current = [];
+    ttsPendingSamplesRef.current = 0;
+    ttsWorkletBufferedFramesRef.current = 0;
+    ttsWorkletUnderrunsRef.current = 0;
+    try {
+      ttsWorkletNodeRef.current?.port.postMessage({ type: "reset" });
+    } catch {}
+    try {
+      ttsWorkletNodeRef.current?.disconnect();
+    } catch {}
+    ttsWorkletNodeRef.current = null;
     setTtsStreamBufferedMs(0);
     if (resetStats) {
       ttsMinBufferedMsRef.current = Number.POSITIVE_INFINITY;
@@ -195,46 +195,173 @@ export default function Home() {
     setTtsRecordedDurationMs((joined.length / sr) * 1000);
   };
 
-  const flushPendingTts = (ctx: AudioContext, inRate: number) => {
-    const total = ttsPendingFramesRef.current;
-    if (!total) return;
-    const chunks = ttsPendingChunksRef.current;
-    ttsPendingChunksRef.current = [];
-    ttsPendingFramesRef.current = 0;
+  const ensureTtsWorklet = async (inRate: number) => {
+    const ctx = await ensureTtsContext(inRate);
+    if (!("audioWorklet" in ctx)) {
+      throw new Error("AudioWorklet not supported in this browser.");
+    }
+    if (ttsWorkletNodeRef.current) return ttsWorkletNodeRef.current;
 
-    const f32 = new Float32Array(total);
+    if (!ttsWorkletModuleUrlRef.current) {
+      // Inline module via Blob URL so it works in a static Next build.
+      const moduleCode = `
+class TtsPlayerProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.inRate = 24000;
+    this.outRate = sampleRate;
+    this.ringSize = Math.max(1, Math.floor(this.outRate * 10));
+    this.ring = new Float32Array(this.ringSize);
+    this.r = 0; this.w = 0; this.count = 0;
+    this.underruns = 0;
+    this.rem = new Float32Array(0);
+    this.pos = 0;
+    this._tick = 0;
+    this.port.onmessage = (e) => {
+      const msg = e.data || {};
+      if (msg.type === "config" && typeof msg.inRate === "number") {
+        this.inRate = msg.inRate;
+      } else if (msg.type === "reset") {
+        this.r = 0; this.w = 0; this.count = 0; this.underruns = 0;
+        this.rem = new Float32Array(0); this.pos = 0;
+      } else if (msg.type === "push" && msg.pcm) {
+        const i16 = new Int16Array(msg.pcm);
+        const f32 = new Float32Array(i16.length);
+        for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+        this._pushResampled(f32);
+      }
+    };
+  }
+
+  _ringWrite(samples) {
+    const size = this.ringSize;
+    if (!size) return;
+    let src = samples;
+    if (src.length >= size) src = src.subarray(src.length - size);
+    const overflow = this.count + src.length - size;
+    if (overflow > 0) {
+      this.r = (this.r + overflow) % size;
+      this.count = Math.max(0, this.count - overflow);
+    }
+    const first = Math.min(src.length, size - this.w);
+    this.ring.set(src.subarray(0, first), this.w);
+    const remain = src.length - first;
+    if (remain > 0) this.ring.set(src.subarray(first), 0);
+    this.w = (this.w + src.length) % size;
+    this.count += src.length;
+  }
+
+  _pushResampled(input) {
+    const step = this.inRate / this.outRate; // input samples per output sample
+    const rem = this.rem;
+    const inBuf = rem.length ? new Float32Array(rem.length + input.length) : input;
+    if (rem.length) {
+      inBuf.set(rem, 0);
+      inBuf.set(input, rem.length);
+    }
+    let pos = this.pos;
+    if (inBuf.length < 2) {
+      this.rem = inBuf;
+      this.pos = pos;
+      return;
+    }
+    const available = inBuf.length - 1 - pos;
+    const outCount = available > 0 ? (Math.floor(available / step) + 1) : 0;
+    if (outCount <= 0) {
+      this.rem = inBuf;
+      this.pos = pos;
+      return;
+    }
+    const out = new Float32Array(outCount);
+    for (let i = 0; i < outCount; i++) {
+      const idx = Math.floor(pos);
+      const frac = pos - idx;
+      const s0 = inBuf[idx];
+      const s1 = inBuf[idx + 1];
+      out[i] = s0 + (s1 - s0) * frac;
+      pos += step;
+    }
+    this._ringWrite(out);
+    const consumedInt = Math.floor(pos);
+    pos = pos - consumedInt;
+    this.rem = inBuf.subarray(consumedInt);
+    this.pos = pos;
+  }
+
+  process(inputs, outputs) {
+    const out = outputs[0][0];
+    const frames = out.length;
+    const size = this.ringSize;
+    if (!size || this.count <= 0) {
+      out.fill(0);
+      this.underruns++;
+    } else {
+      const toRead = Math.min(frames, this.count);
+      const first = Math.min(toRead, size - this.r);
+      out.set(this.ring.subarray(this.r, this.r + first), 0);
+      const remain = toRead - first;
+      if (remain > 0) out.set(this.ring.subarray(0, remain), first);
+      if (toRead < frames) {
+        out.fill(0, toRead);
+        this.underruns++;
+      }
+      this.r = (this.r + toRead) % size;
+      this.count -= toRead;
+    }
+    this._tick++;
+    if ((this._tick % 20) === 0) {
+      this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns });
+    }
+    return true;
+  }
+}
+registerProcessor("tts-player", TtsPlayerProcessor);
+`;
+      const blob = new Blob([moduleCode], { type: "text/javascript" });
+      ttsWorkletModuleUrlRef.current = URL.createObjectURL(blob);
+    }
+
+    await ctx.audioWorklet.addModule(ttsWorkletModuleUrlRef.current);
+    const node = new AudioWorkletNode(ctx, "tts-player", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
+    node.port.onmessage = (e) => {
+      const msg = e.data || {};
+      if (msg.type === "stats") {
+        if (typeof msg.bufferedFrames === "number") ttsWorkletBufferedFramesRef.current = msg.bufferedFrames;
+        if (typeof msg.underruns === "number") ttsWorkletUnderrunsRef.current = msg.underruns;
+      }
+    };
+    node.connect(ctx.destination);
+    node.port.postMessage({ type: "config", inRate });
+    ttsWorkletNodeRef.current = node;
+    return node;
+  };
+
+  const flushPendingTts = async (inRate: number) => {
+    const total = ttsPendingSamplesRef.current;
+    if (!total) return;
+    const chunks = ttsPendingPcmRef.current;
+    ttsPendingPcmRef.current = [];
+    ttsPendingSamplesRef.current = 0;
+
+    const joined = new Int16Array(total);
     let off = 0;
     for (const c of chunks) {
-      f32.set(c, off);
+      joined.set(c, off);
       off += c.length;
     }
 
+    const ctx = await ensureTtsContext(inRate);
+    // Establish "started" for status; worklet will prebuffer naturally via ring.
     if (!ttsStartedRef.current) {
       ttsStartedRef.current = true;
-      const base = ctx.currentTime + ttsPrebufferMs / 1000;
-      ttsNextPlayTimeRef.current = Math.max(ttsNextPlayTimeRef.current || 0, base);
       setTtsStreamStatus("playing");
     }
+    // Push into worklet (transfer the buffer).
+    await ensureTtsWorklet(inRate);
+    ttsWorkletNodeRef.current?.port.postMessage({ type: "push", pcm: joined.buffer }, [joined.buffer as ArrayBuffer]);
 
-    const buf = ctx.createBuffer(1, f32.length, inRate);
-    buf.copyToChannel(f32, 0);
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-
-    const startAt = Math.max(ttsNextPlayTimeRef.current, ctx.currentTime);
-    src.start(startAt);
-    ttsNextPlayTimeRef.current = startAt + buf.duration;
-
-    ttsSourcesRef.current.push(src);
-    src.onended = () => {
-      const arr = ttsSourcesRef.current;
-      const idx = arr.indexOf(src);
-      if (idx >= 0) arr.splice(idx, 1);
-    };
-
-    // For stats, count *scheduled output frames* (approx).
-    const outFrames = Math.max(1, Math.round((f32.length * ctx.sampleRate) / inRate));
+    // Stats: approximate output frames.
+    const outFrames = Math.max(1, Math.round((total * ctx.sampleRate) / inRate));
     setTtsStreamFrames((n) => n + outFrames);
   };
 
@@ -272,10 +399,9 @@ export default function Home() {
   useEffect(() => {
     const id = window.setInterval(() => {
       const ctx = ttsCtxRef.current;
-      const ms =
-        ctx && ttsStartedRef.current
-          ? Math.max(0, (ttsNextPlayTimeRef.current - ctx.currentTime) * 1000)
-          : 0;
+      const outRate = ctx?.sampleRate ?? _ttsOutRate();
+      const bufferedFrames = ttsWorkletBufferedFramesRef.current || 0;
+      const ms = outRate ? (bufferedFrames / outRate) * 1000 : 0;
       ttsBufferedMsRef.current = ms;
       setTtsStreamBufferedMs(ms);
       if (ttsStreamStatusRef.current !== "idle") {
@@ -318,13 +444,14 @@ export default function Home() {
           ttsMaxBufferedMsRef.current = 0;
           setTtsStreamMinBufferedMs(0);
           setTtsStreamMaxBufferedMs(0);
-          ttsNextPlayTimeRef.current = 0;
           if (ttsRecordEnabled) {
             clearTtsRecording();
             setTtsRecordedSampleRate(msg.sample_rate);
           }
           // Ensure AudioContext exists (even if suspended).
           void ensureTtsContext(ttsSampleRateRef.current);
+          // Prepare worklet with the incoming sample rate (doesn't start audio until user gesture resumes ctx).
+          void ensureTtsWorklet(msg.sample_rate).catch(() => {});
         }
         if (msg.type === "tts_chunk") {
           try {
@@ -351,19 +478,17 @@ export default function Home() {
               if (i16.length) {
                 const inRate = ttsSampleRateRef.current;
                 if (ttsRecordEnabled) {
-                  ttsRecordedChunksRef.current.push(i16);
+                  // Copy so we can transfer other buffers to the worklet without detaching recorded data.
+                  ttsRecordedChunksRef.current.push(i16.slice());
                   ttsRecordedSamplesRef.current += i16.length;
                 }
-                const f32 = new Float32Array(i16.length);
-                for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
 
-                // Coalesce into bigger buffers before scheduling to reduce main-thread overhead.
-                ttsPendingChunksRef.current.push(f32);
-                ttsPendingFramesRef.current += f32.length;
-
-                const targetFrames = Math.max(1, Math.floor((inRate * ttsScheduleChunkMs) / 1000));
-                if (ttsPendingFramesRef.current >= targetFrames) {
-                  void ensureTtsContext(inRate).then((ctx) => flushPendingTts(ctx, inRate));
+                // Coalesce PCM samples before pushing to worklet.
+                ttsPendingPcmRef.current.push(i16);
+                ttsPendingSamplesRef.current += i16.length;
+                const targetSamples = Math.max(1, Math.floor((inRate * ttsScheduleChunkMs) / 1000));
+                if (ttsPendingSamplesRef.current >= targetSamples) {
+                  void flushPendingTts(inRate);
                 }
               }
             }
@@ -377,17 +502,14 @@ export default function Home() {
           // Drain: keep playing until queue is empty; then stop the processor.
           setTtsStreamStatus("draining");
           // Flush any remaining coalesced audio.
-          void ensureTtsContext(ttsSampleRateRef.current).then((ctx) =>
-            flushPendingTts(ctx, ttsSampleRateRef.current)
-          );
+          void flushPendingTts(ttsSampleRateRef.current);
           // Capture a WAV of exactly what we received from the model.
           finalizeTtsRecording();
           const check = setInterval(() => {
             const ctx = ttsCtxRef.current;
-            const ms =
-              ctx && ttsStartedRef.current
-                ? Math.max(0, (ttsNextPlayTimeRef.current - ctx.currentTime) * 1000)
-                : 0;
+            const outRate = ctx?.sampleRate ?? _ttsOutRate();
+            const bufferedFrames = ttsWorkletBufferedFramesRef.current || 0;
+            const ms = outRate ? (bufferedFrames / outRate) * 1000 : 0;
             if (ttsStartedRef.current && ms <= 5) {
               // Auto-finish: keep min/max visible for debugging; only clear on next tts_begin or manual stop.
               stopTtsStream({ resetStats: false });
@@ -526,6 +648,12 @@ export default function Home() {
       disconnect();
       mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
       audioCtxRef.current?.close();
+      if (ttsWorkletModuleUrlRef.current) {
+        try {
+          URL.revokeObjectURL(ttsWorkletModuleUrlRef.current);
+        } catch {}
+        ttsWorkletModuleUrlRef.current = "";
+      }
       ttsCtxRef.current?.close();
     };
   }, []);
