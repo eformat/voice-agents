@@ -104,32 +104,81 @@ export default function Home() {
   // ===== Streaming TTS player (WebAudio + ScriptProcessor ring buffer) =====
   const ttsCtxRef = useRef<AudioContext | null>(null);
   const ttsProcRef = useRef<ScriptProcessorNode | null>(null);
-  const ttsQueueRef = useRef<Float32Array[]>([]);
-  const ttsQueueOffsetRef = useRef<number>(0);
   const ttsSampleRateRef = useRef<number>(24000);
   const ttsStartedRef = useRef<boolean>(false);
   const ttsByteRemainderRef = useRef<Uint8Array>(new Uint8Array(0));
-  const ttsPrebufferMs = 250; // keep realtime feel, but avoid most underflows
+  const ttsPrebufferMs = 550; // add more jitter tolerance; better UX than choppy speech
+  const ttsLowWaterMs = 120; // if buffered below this, pause consumption and rebuffer
+  const ttsHighWaterMs = 420; // resume consumption when buffer refills above this
 
-  const ttsBufferedFrames = () => {
-    const q = ttsQueueRef.current;
-    let total = 0;
-    for (let i = 0; i < q.length; i++) total += q[i].length;
-    total -= ttsQueueOffsetRef.current;
-    return Math.max(0, total);
-  };
+  // Ring buffer at output sample rate (AudioContext sampleRate).
+  const ttsRingRef = useRef<Float32Array | null>(null);
+  const ttsRingSizeRef = useRef<number>(0);
+  const ttsRingWriteRef = useRef<number>(0);
+  const ttsRingReadRef = useRef<number>(0);
+  const ttsRingCountRef = useRef<number>(0); // available frames
+  const ttsBufferedMsRef = useRef<number>(0);
+  const ttsRebufferingRef = useRef<boolean>(false);
+
+  const ttsBufferedFrames = () => ttsRingCountRef.current;
 
   const _ttsOutRate = () => ttsCtxRef.current?.sampleRate ?? ttsSampleRateRef.current;
+
+  const ensureTtsRing = (outRate: number) => {
+    // Keep a few seconds of audio to absorb backend/network jitter.
+    const seconds = 8;
+    const size = Math.max(1, Math.floor(outRate * seconds));
+    if (ttsRingRef.current && ttsRingSizeRef.current === size) return;
+
+    ttsRingRef.current = new Float32Array(size);
+    ttsRingSizeRef.current = size;
+    ttsRingWriteRef.current = 0;
+    ttsRingReadRef.current = 0;
+    ttsRingCountRef.current = 0;
+  };
+
+  const ttsRingPush = (samples: Float32Array) => {
+    const outRate = _ttsOutRate();
+    ensureTtsRing(outRate);
+    const ring = ttsRingRef.current!;
+    const size = ttsRingSizeRef.current;
+    if (!size) return;
+
+    // If a single chunk is larger than capacity, keep only the tail.
+    let src = samples;
+    if (src.length >= size) src = src.subarray(src.length - size);
+
+    // If we'd overflow, drop the oldest audio (advance read pointer).
+    const overflow = ttsRingCountRef.current + src.length - size;
+    if (overflow > 0) {
+      ttsRingReadRef.current = (ttsRingReadRef.current + overflow) % size;
+      ttsRingCountRef.current = Math.max(0, ttsRingCountRef.current - overflow);
+    }
+
+    // Write with wraparound.
+    let w = ttsRingWriteRef.current;
+    const first = Math.min(src.length, size - w);
+    ring.set(src.subarray(0, first), w);
+    const remain = src.length - first;
+    if (remain > 0) ring.set(src.subarray(first), 0);
+    ttsRingWriteRef.current = (w + src.length) % size;
+    ttsRingCountRef.current += src.length;
+  };
 
   const stopTtsStream = () => {
     try {
       ttsProcRef.current?.disconnect();
     } catch {}
     ttsProcRef.current = null;
-    ttsQueueRef.current = [];
-    ttsQueueOffsetRef.current = 0;
     ttsStartedRef.current = false;
     ttsByteRemainderRef.current = new Uint8Array(0);
+    ttsRingRef.current = null;
+    ttsRingSizeRef.current = 0;
+    ttsRingWriteRef.current = 0;
+    ttsRingReadRef.current = 0;
+    ttsRingCountRef.current = 0;
+    ttsBufferedMsRef.current = 0;
+    ttsRebufferingRef.current = false;
     setTtsStreamBufferedMs(0);
     setTtsStreamStatus("idle");
   };
@@ -149,6 +198,21 @@ export default function Home() {
     }
   };
 
+  // Update buffered-ms UI outside the audio callback to avoid glitching playback.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const ctx = ttsCtxRef.current;
+      const sr = ctx?.sampleRate ?? _ttsOutRate();
+      // Prefer the fast ref written by the audio callback; fall back to computed.
+      const ms =
+        ttsStartedRef.current && sr
+          ? ttsBufferedMsRef.current || (ttsBufferedFrames() / sr) * 1000
+          : (ttsBufferedFrames() / sr) * 1000;
+      setTtsStreamBufferedMs(ms);
+    }, 200);
+    return () => window.clearInterval(id);
+  }, []);
+
   const startTtsIfReady = async (forceStart: boolean = false) => {
     if (ttsStartedRef.current) return;
     const outSr = _ttsOutRate();
@@ -159,26 +223,50 @@ export default function Home() {
     const ctx = await ensureTtsContext(ttsSampleRateRef.current);
     if (ctx.state !== "running") await ctx.resume().catch(() => {});
 
-    const proc = ctx.createScriptProcessor(2048, 0, 1);
+    ensureTtsRing(ctx.sampleRate);
+    const proc = ctx.createScriptProcessor(4096, 0, 1);
     proc.onaudioprocess = (e) => {
       const out = e.outputBuffer.getChannelData(0);
       const frames = out.length;
       const srLocal = ctx.sampleRate;
-      for (let i = 0; i < frames; i++) {
-        const q = ttsQueueRef.current;
-        while (q.length && ttsQueueOffsetRef.current >= q[0].length) {
-          q.shift();
-          ttsQueueOffsetRef.current = 0;
-        }
-        if (!q.length) {
-          out[i] = 0;
+
+      const available = ttsRingCountRef.current;
+      const bufferedMsNow = (available / srLocal) * 1000;
+      ttsBufferedMsRef.current = bufferedMsNow;
+
+      // Jitter buffer: pause consumption when low, resume when refilled.
+      if (ttsRebufferingRef.current) {
+        if (bufferedMsNow >= ttsHighWaterMs) {
+          ttsRebufferingRef.current = false;
         } else {
-          const sample = q[0][ttsQueueOffsetRef.current];
-          ttsQueueOffsetRef.current += 1;
-          out[i] = sample;
+          out.fill(0);
+          return;
         }
+      } else if (bufferedMsNow < ttsLowWaterMs) {
+        ttsRebufferingRef.current = true;
+        out.fill(0);
+        return;
       }
-      setTtsStreamBufferedMs((ttsBufferedFrames() / srLocal) * 1000);
+
+      const ring = ttsRingRef.current;
+      const size = ttsRingSizeRef.current;
+      if (!ring || !size || ttsRingCountRef.current === 0) {
+        out.fill(0);
+        ttsRebufferingRef.current = true;
+        return;
+      }
+
+      const toRead = Math.min(frames, ttsRingCountRef.current);
+      let r = ttsRingReadRef.current;
+      const first = Math.min(toRead, size - r);
+      out.set(ring.subarray(r, r + first), 0);
+      const remain = toRead - first;
+      if (remain > 0) out.set(ring.subarray(0, remain), first);
+      if (toRead < frames) out.fill(0, toRead);
+
+      ttsRingReadRef.current = (r + toRead) % size;
+      ttsRingCountRef.current -= toRead;
+      if (toRead < frames) ttsRebufferingRef.current = true;
     };
 
     ttsProcRef.current = proc;
@@ -211,6 +299,8 @@ export default function Home() {
           setTtsStreamChunks(0);
           setTtsStreamBytes(0);
           setTtsStreamFrames(0);
+          // Allocate the output-rate ring early (even if context is suspended).
+          void ensureTtsContext(ttsSampleRateRef.current).then((ctx) => ensureTtsRing(ctx.sampleRate));
         }
         if (msg.type === "tts_chunk") {
           try {
@@ -248,7 +338,7 @@ export default function Home() {
                   const s1 = i16[Math.min(idx + 1, i16.length - 1)] / 32768;
                   out[i] = s0 + (s1 - s0) * frac;
                 }
-                ttsQueueRef.current.push(out);
+                ttsRingPush(out);
                 setTtsStreamFrames((n) => n + out.length);
               }
             }
