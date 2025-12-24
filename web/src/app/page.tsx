@@ -114,12 +114,16 @@ export default function Home() {
   const ttsSampleRateRef = useRef<number>(24000);
   const ttsStartedRef = useRef<boolean>(false);
   const ttsByteRemainderRef = useRef<Uint8Array>(new Uint8Array(0));
-  const ttsPrebufferMs = 350; // worklet buffer target; keep low latency but avoid underruns
+  const ttsPrebufferMs = 900; // prebuffer before starting playback to absorb jitter
+  const ttsLowWaterMs = 250; // if buffer drops below this, pause and rebuffer
+  const ttsHighWaterMs = 750; // resume once buffer is back above this
 
   const ttsWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const ttsWorkletModuleUrlRef = useRef<string>("");
   const ttsWorkletBufferedFramesRef = useRef<number>(0);
   const ttsWorkletUnderrunsRef = useRef<number>(0);
+  const ttsWorkletRebuffersRef = useRef<number>(0);
+  const ttsWorkletPlayingRef = useRef<boolean>(false);
 
   // Coalesce incoming PCM chunks to reduce postMessage overhead.
   const ttsPendingPcmRef = useRef<Int16Array[]>([]);
@@ -146,6 +150,8 @@ export default function Home() {
     ttsPendingSamplesRef.current = 0;
     ttsWorkletBufferedFramesRef.current = 0;
     ttsWorkletUnderrunsRef.current = 0;
+    ttsWorkletRebuffersRef.current = 0;
+    ttsWorkletPlayingRef.current = false;
     try {
       ttsWorkletNodeRef.current?.port.postMessage({ type: "reset" });
     } catch {}
@@ -214,6 +220,11 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     this.ring = new Float32Array(this.ringSize);
     this.r = 0; this.w = 0; this.count = 0;
     this.underruns = 0;
+    this.rebuffers = 0;
+    this.playing = false;
+    this.startFrames = Math.floor(this.outRate * 0.9);
+    this.lowFrames = Math.floor(this.outRate * 0.25);
+    this.highFrames = Math.floor(this.outRate * 0.75);
     this.rem = new Float32Array(0);
     this.pos = 0;
     this._tick = 0;
@@ -221,8 +232,12 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
       const msg = e.data || {};
       if (msg.type === "config" && typeof msg.inRate === "number") {
         this.inRate = msg.inRate;
+        if (typeof msg.startFrames === "number") this.startFrames = Math.max(0, msg.startFrames|0);
+        if (typeof msg.lowFrames === "number") this.lowFrames = Math.max(0, msg.lowFrames|0);
+        if (typeof msg.highFrames === "number") this.highFrames = Math.max(0, msg.highFrames|0);
       } else if (msg.type === "reset") {
         this.r = 0; this.w = 0; this.count = 0; this.underruns = 0;
+        this.rebuffers = 0; this.playing = false;
         this.rem = new Float32Array(0); this.pos = 0;
       } else if (msg.type === "push" && msg.pcm) {
         const i16 = new Int16Array(msg.pcm);
@@ -292,6 +307,34 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     const out = outputs[0][0];
     const frames = out.length;
     const size = this.ringSize;
+    // Jitter buffer gating: don't start until we have startFrames buffered.
+    // If we drop below lowFrames, pause until we refill above highFrames.
+    if (!this.playing) {
+      if (this.count >= this.startFrames || (this.startFrames === 0 && this.count > 0)) {
+        this.playing = true;
+      } else {
+        out.fill(0);
+        this._tick++;
+        if ((this._tick % 20) === 0) {
+          this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
+        }
+        return true;
+      }
+    }
+    if (this.count < this.lowFrames) {
+      this.playing = false;
+      this.rebuffers++;
+      out.fill(0);
+      this._tick++;
+      if ((this._tick % 20) === 0) {
+        this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
+      }
+      return true;
+    }
+    // If we were paused and refilled enough, resume.
+    if (!this.playing && this.count >= this.highFrames) {
+      this.playing = true;
+    }
     if (!size || this.count <= 0) {
       out.fill(0);
       this.underruns++;
@@ -310,7 +353,7 @@ class TtsPlayerProcessor extends AudioWorkletProcessor {
     }
     this._tick++;
     if ((this._tick % 20) === 0) {
-      this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns });
+      this.port.postMessage({ type: "stats", bufferedFrames: this.count, underruns: this.underruns, rebuffers: this.rebuffers, playing: this.playing });
     }
     return true;
   }
@@ -328,10 +371,15 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       if (msg.type === "stats") {
         if (typeof msg.bufferedFrames === "number") ttsWorkletBufferedFramesRef.current = msg.bufferedFrames;
         if (typeof msg.underruns === "number") ttsWorkletUnderrunsRef.current = msg.underruns;
+        if (typeof msg.rebuffers === "number") ttsWorkletRebuffersRef.current = msg.rebuffers;
+        if (typeof msg.playing === "boolean") ttsWorkletPlayingRef.current = msg.playing;
       }
     };
     node.connect(ctx.destination);
-    node.port.postMessage({ type: "config", inRate });
+    const startFrames = Math.max(0, Math.floor((ctx.sampleRate * ttsPrebufferMs) / 1000));
+    const lowFrames = Math.max(0, Math.floor((ctx.sampleRate * ttsLowWaterMs) / 1000));
+    const highFrames = Math.max(lowFrames, Math.floor((ctx.sampleRate * ttsHighWaterMs) / 1000));
+    node.port.postMessage({ type: "config", inRate, startFrames, lowFrames, highFrames });
     ttsWorkletNodeRef.current = node;
     return node;
   };
@@ -404,7 +452,8 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       const ms = outRate ? (bufferedFrames / outRate) * 1000 : 0;
       ttsBufferedMsRef.current = ms;
       setTtsStreamBufferedMs(ms);
-      if (ttsStreamStatusRef.current !== "idle") {
+      // Track min/max only while actually playing (otherwise initial prebuffer would force min=0).
+      if (ttsStreamStatusRef.current !== "idle" && ttsWorkletPlayingRef.current) {
         ttsMinBufferedMsRef.current = Math.min(ttsMinBufferedMsRef.current, ms);
         ttsMaxBufferedMsRef.current = Math.max(ttsMaxBufferedMsRef.current, ms);
         setTtsStreamMinBufferedMs(
@@ -850,6 +899,8 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             <span className="text-zinc-200">
               {ttsStreamMinBufferedMs.toFixed(0)}ms / {ttsStreamMaxBufferedMs.toFixed(0)}ms
             </span>
+            {" "} | underruns: <span className="text-zinc-200">{ttsWorkletUnderrunsRef.current}</span>
+            {" "} | rebuffers: <span className="text-zinc-200">{ttsWorkletRebuffersRef.current}</span>
             {" "} | chunks: <span className="text-zinc-200">{ttsStreamChunks}</span>
             {" "} | bytes: <span className="text-zinc-200">{ttsStreamBytes}</span>
             {" "} | frames: <span className="text-zinc-200">{ttsStreamFrames}</span>
