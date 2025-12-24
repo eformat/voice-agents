@@ -85,6 +85,8 @@ export default function Home() {
   const [ttsStreamMaxBufferedMs, setTtsStreamMaxBufferedMs] = useState<number>(0);
   const [ttsStreamUnderruns, setTtsStreamUnderruns] = useState<number>(0);
   const [ttsStreamRebuffers, setTtsStreamRebuffers] = useState<number>(0);
+  const [ttsTtftMs, setTtsTtftMs] = useState<number>(0);
+  const [ttsTtfbMs, setTtsTtfbMs] = useState<number>(0);
   const [ttsRecordEnabled, setTtsRecordEnabled] = useState<boolean>(true);
   const [ttsRecordedUrl, setTtsRecordedUrl] = useState<string>("");
   const [ttsRecordedFilename, setTtsRecordedFilename] = useState<string>("");
@@ -127,6 +129,9 @@ export default function Home() {
   const ttsWorkletRebuffersRef = useRef<number>(0);
   const ttsWorkletPlayingRef = useRef<boolean>(false);
   const ttsStatsLatchedRef = useRef<boolean>(false);
+  const ttsReqStartedAtMsRef = useRef<number>(0);
+  const ttsBeginAtMsRef = useRef<number>(0);
+  const ttsFirstAudioAtMsRef = useRef<number>(0);
 
   // Shared ring buffer (SharedArrayBuffer + Atomics) to avoid per-chunk port messaging.
   const ttsSabAudioRef = useRef<SharedArrayBuffer | null>(null);
@@ -658,6 +663,12 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             ttsStreamBytesRef.current += len;
             ttsStreamChunksRef.current += 1;
             ttsRxLastAtMsRef.current = Date.now();
+            if (ttsFirstAudioAtMsRef.current === 0) {
+              ttsFirstAudioAtMsRef.current = ttsRxLastAtMsRef.current;
+              if (ttsReqStartedAtMsRef.current > 0) {
+                setTtsTtfbMs(ttsFirstAudioAtMsRef.current - ttsReqStartedAtMsRef.current);
+              }
+            }
             const inRate = ttsSampleRateRef.current || 24000;
             const outRate = ttsCtxRef.current?.sampleRate ?? 48000;
             const inSamples = Math.floor(len / 2);
@@ -692,6 +703,14 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           ttsStatsLatchedRef.current = false;
           ttsSampleRateRef.current = msg.sample_rate;
           ttsReceivingBinaryRef.current = true;
+          ttsBeginAtMsRef.current = Date.now();
+          ttsFirstAudioAtMsRef.current = 0;
+          if (ttsReqStartedAtMsRef.current > 0) {
+            setTtsTtftMs(ttsBeginAtMsRef.current - ttsReqStartedAtMsRef.current);
+          } else {
+            setTtsTtftMs(0);
+          }
+          setTtsTtfbMs(0);
           setTtsStreamStatus("buffering");
           ttsStreamChunksRef.current = 0;
           ttsStreamBytesRef.current = 0;
@@ -750,6 +769,12 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           ttsStatsLatchedRef.current = true;
           setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
           setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
+          if (ttsReqStartedAtMsRef.current > 0 && ttsBeginAtMsRef.current > 0) {
+            setTtsTtftMs(ttsBeginAtMsRef.current - ttsReqStartedAtMsRef.current);
+          }
+          if (ttsReqStartedAtMsRef.current > 0 && ttsFirstAudioAtMsRef.current > 0) {
+            setTtsTtfbMs(ttsFirstAudioAtMsRef.current - ttsReqStartedAtMsRef.current);
+          }
           // Capture a WAV of exactly what we received from the model.
           finalizeTtsRecording();
           const check = setInterval(() => {
@@ -899,6 +924,11 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       setError("Connect to WS server first.");
       return;
     }
+    ttsReqStartedAtMsRef.current = Date.now();
+    ttsBeginAtMsRef.current = 0;
+    ttsFirstAudioAtMsRef.current = 0;
+    setTtsTtftMs(0);
+    setTtsTtfbMs(0);
     wsRef.current.send(JSON.stringify({ type: "text", text: textToSend }));
   };
 
@@ -908,6 +938,11 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       setError("Connect to WS server first.");
       return;
     }
+    ttsReqStartedAtMsRef.current = Date.now();
+    ttsBeginAtMsRef.current = 0;
+    ttsFirstAudioAtMsRef.current = 0;
+    setTtsTtftMs(0);
+    setTtsTtfbMs(0);
     // Prime audio inside the click handler (user gesture) so playback isn't blocked.
     void primeTtsAudio();
     wsRef.current.send(JSON.stringify({ type: "tts_text", text: textToSend }));
@@ -919,6 +954,11 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       setError("Connect to WS server first.");
       return;
     }
+    ttsReqStartedAtMsRef.current = Date.now();
+    ttsBeginAtMsRef.current = 0;
+    ttsFirstAudioAtMsRef.current = 0;
+    setTtsTtftMs(0);
+    setTtsTtfbMs(0);
     const b64 = await blobToBase64(file);
     wsRef.current.send(JSON.stringify({ type: "audio_wav_b64", audio_b64: b64 }));
   };
@@ -1077,6 +1117,8 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             {" "} | underruns: <span className="text-zinc-200">{ttsStreamUnderruns}</span>
             {" "} | rebuffers: <span className="text-zinc-200">{ttsStreamRebuffers}</span>
             {" "} | gen x: <span className="text-zinc-200">{ttsGenRealtimeX.toFixed(2)}</span>
+            {" "} | ttft: <span className="text-zinc-200">{ttsTtftMs ? `${ttsTtftMs}ms` : "-"}</span>
+            {" "} | ttfb: <span className="text-zinc-200">{ttsTtfbMs ? `${ttsTtfbMs}ms` : "-"}</span>
             {" "} | chunks: <span className="text-zinc-200">{ttsStreamChunks}</span>
             {" "} | bytes: <span className="text-zinc-200">{ttsStreamBytes}</span>
             {" "} | frames: <span className="text-zinc-200">{ttsStreamFrames}</span>
