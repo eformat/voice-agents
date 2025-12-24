@@ -90,6 +90,8 @@ export default function Home() {
   const [ttsStreamBytes, setTtsStreamBytes] = useState<number>(0);
   const [ttsStreamFrames, setTtsStreamFrames] = useState<number>(0);
   const [ttsOutSampleRate, setTtsOutSampleRate] = useState<number>(0);
+  const [ttsStreamMinBufferedMs, setTtsStreamMinBufferedMs] = useState<number>(0);
+  const [ttsStreamMaxBufferedMs, setTtsStreamMaxBufferedMs] = useState<number>(0);
   const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
   const [micDeviceId, setMicDeviceId] = useState<string>("default");
 
@@ -123,6 +125,8 @@ export default function Home() {
   const ttsRingCountRef = useRef<number>(0); // available frames
   const ttsBufferedMsRef = useRef<number>(0);
   const ttsRebufferingRef = useRef<boolean>(false);
+  const ttsMinBufferedMsRef = useRef<number>(Number.POSITIVE_INFINITY);
+  const ttsMaxBufferedMsRef = useRef<number>(0);
 
   const ttsBufferedFrames = () => ttsRingCountRef.current;
 
@@ -185,7 +189,11 @@ export default function Home() {
     ttsRingCountRef.current = 0;
     ttsBufferedMsRef.current = 0;
     ttsRebufferingRef.current = false;
+    ttsMinBufferedMsRef.current = Number.POSITIVE_INFINITY;
+    ttsMaxBufferedMsRef.current = 0;
     setTtsStreamBufferedMs(0);
+    setTtsStreamMinBufferedMs(0);
+    setTtsStreamMaxBufferedMs(0);
     setTtsStreamStatus("idle");
   };
 
@@ -215,6 +223,14 @@ export default function Home() {
           ? ttsBufferedMsRef.current || (ttsBufferedFrames() / sr) * 1000
           : (ttsBufferedFrames() / sr) * 1000;
       setTtsStreamBufferedMs(ms);
+      if (ttsStreamStatus !== "idle") {
+        ttsMinBufferedMsRef.current = Math.min(ttsMinBufferedMsRef.current, ms);
+        ttsMaxBufferedMsRef.current = Math.max(ttsMaxBufferedMsRef.current, ms);
+        setTtsStreamMinBufferedMs(
+          Number.isFinite(ttsMinBufferedMsRef.current) ? ttsMinBufferedMsRef.current : 0
+        );
+        setTtsStreamMaxBufferedMs(ttsMaxBufferedMsRef.current);
+      }
     }, 200);
     return () => window.clearInterval(id);
   }, []);
@@ -307,6 +323,10 @@ export default function Home() {
           setTtsStreamFrames(0);
           ttsResampleRemainderRef.current = new Float32Array(0);
           ttsResamplePosRef.current = 0;
+          ttsMinBufferedMsRef.current = Number.POSITIVE_INFINITY;
+          ttsMaxBufferedMsRef.current = 0;
+          setTtsStreamMinBufferedMs(0);
+          setTtsStreamMaxBufferedMs(0);
           // Allocate the output-rate ring early (even if context is suspended).
           void ensureTtsContext(ttsSampleRateRef.current).then((ctx) => ensureTtsRing(ctx.sampleRate));
         }
@@ -733,6 +753,10 @@ export default function Home() {
           <div className="text-xs text-zinc-400">
             TTS stream: <span className="text-zinc-200">{ttsStreamStatus}</span> | buffered:{" "}
             <span className="text-zinc-200">{ttsStreamBufferedMs.toFixed(0)}ms</span>
+            {" "} | min/max:{" "}
+            <span className="text-zinc-200">
+              {ttsStreamMinBufferedMs.toFixed(0)}ms / {ttsStreamMaxBufferedMs.toFixed(0)}ms
+            </span>
             {" "} | chunks: <span className="text-zinc-200">{ttsStreamChunks}</span>
             {" "} | bytes: <span className="text-zinc-200">{ttsStreamBytes}</span>
             {" "} | frames: <span className="text-zinc-200">{ttsStreamFrames}</span>
