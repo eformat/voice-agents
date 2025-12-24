@@ -115,8 +115,10 @@ export default function Home() {
   const ttsStartedRef = useRef<boolean>(false);
   const ttsByteRemainderRef = useRef<Uint8Array>(new Uint8Array(0));
   const ttsPrebufferMs = 900; // prebuffer before starting playback to absorb jitter
-  const ttsLowWaterMs = 250; // if buffer drops below this, pause and rebuffer
-  const ttsHighWaterMs = 750; // resume once buffer is back above this
+  // Mid-stream rebuffering was causing audible "chops" even when the ring buffer never truly underruns.
+  // Disable it and rely on actual underruns (zeros) as the only failure mode.
+  const ttsLowWaterMs = 0;
+  const ttsHighWaterMs = 0;
 
   const ttsWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const ttsWorkletModuleUrlRef = useRef<string>("");
@@ -128,7 +130,7 @@ export default function Home() {
   // Coalesce incoming PCM chunks to reduce postMessage overhead.
   const ttsPendingPcmRef = useRef<Int16Array[]>([]);
   const ttsPendingSamplesRef = useRef<number>(0);
-  const ttsScheduleChunkMs = 250; // target size for each worklet push (in input sample rate)
+  const ttsScheduleChunkMs = 120; // smaller pushes reduce burstiness/jitter feeding the worklet
 
   const ttsBufferedMsRef = useRef<number>(0); // updated by interval for UI + min/max
   const ttsMinBufferedMsRef = useRef<number>(Number.POSITIVE_INFINITY);
