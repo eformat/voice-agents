@@ -104,6 +104,7 @@ export default function Home() {
   const [micDeviceId, setMicDeviceId] = useState<string>("default");
 
   const wsRef = useRef<WebSocket | null>(null);
+  const ttsReceivingBinaryRef = useRef<boolean>(false);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -517,6 +518,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
   const connect = () => {
     setError("");
     const ws = new WebSocket(wsUrl);
+    ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       wsRef.current = ws;
       setConnected(true);
@@ -529,11 +531,57 @@ registerProcessor("tts-player", TtsPlayerProcessor);
     ws.onerror = () => setError("WebSocket error");
     ws.onmessage = (evt) => {
       try {
+        // TTS audio chunks can arrive as binary frames (ArrayBuffer) to avoid base64 overhead.
+        if (typeof evt.data !== "string") {
+          if (!ttsReceivingBinaryRef.current) return;
+          const handleBytes = (bytes: Uint8Array) => {
+            setTtsStreamBytes((n) => n + bytes.length);
+            const rem = ttsByteRemainderRef.current;
+            let combined: Uint8Array;
+            if (rem.length) {
+              combined = new Uint8Array(rem.length + bytes.length);
+              combined.set(rem, 0);
+              combined.set(bytes, rem.length);
+            } else {
+              combined = bytes;
+            }
+            const evenLen = combined.length - (combined.length % 2);
+            if (evenLen > 0) {
+              const frameBytes = combined.subarray(0, evenLen);
+              const i16 = bytesToInt16(frameBytes);
+              if (i16.length) {
+                const inRate = ttsSampleRateRef.current;
+                if (ttsRecordEnabled) {
+                  ttsRecordedChunksRef.current.push(i16.slice());
+                  ttsRecordedSamplesRef.current += i16.length;
+                }
+                ttsPendingPcmRef.current.push(i16);
+                ttsPendingSamplesRef.current += i16.length;
+                const targetSamples = Math.max(1, Math.floor((inRate * ttsScheduleChunkMs) / 1000));
+                if (ttsPendingSamplesRef.current >= targetSamples) void flushPendingTts(inRate);
+              }
+            }
+            ttsByteRemainderRef.current = combined.subarray(evenLen);
+            setTtsStreamChunks((n) => n + 1);
+          };
+
+          if (evt.data instanceof ArrayBuffer) {
+            handleBytes(new Uint8Array(evt.data));
+            return;
+          }
+          if (evt.data instanceof Blob) {
+            void evt.data.arrayBuffer().then((buf) => handleBytes(new Uint8Array(buf)));
+            return;
+          }
+          return;
+        }
+
         const msg = JSON.parse(evt.data) as WsMsg;
         if (msg.type === "transcript") setTranscript(msg.text);
         if (msg.type === "tts_begin") {
           stopTtsStream({ resetStats: true });
           ttsSampleRateRef.current = msg.sample_rate;
+          ttsReceivingBinaryRef.current = true;
           setTtsStreamStatus("buffering");
           setTtsStreamChunks(0);
           setTtsStreamBytes(0);
@@ -556,6 +604,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           void ensureTtsWorklet(msg.sample_rate).catch(() => {});
         }
         if (msg.type === "tts_chunk") {
+          // Backward-compatible: older server sent base64 JSON chunks.
           try {
             // Ensure WebAudio has been created/resumed from a user gesture.
             // If not, we still buffer, but playback may be blocked by autoplay policy.
@@ -603,6 +652,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
         if (msg.type === "tts_end") {
           // Drain: keep playing until queue is empty; then stop the processor.
           setTtsStreamStatus("draining");
+          ttsReceivingBinaryRef.current = false;
           // Flush any remaining coalesced audio.
           void flushPendingTts(ttsSampleRateRef.current);
           // Tell the worklet no more input is expected; it will stop itself once drained.

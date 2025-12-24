@@ -12,7 +12,7 @@ Protocol (server -> client):
       {"type":"transcript","text":"..."}
       {"type":"graph_result","pizza_type":"...","messages":[{"role":"...","content":"..."}]}
       {"type":"tts_begin","format":"pcm_s16le","sample_rate":24000}
-      {"type":"tts_chunk","audio_b64":"...","seq":0}
+      # After tts_begin, server streams raw binary websocket frames containing pcm_s16le bytes.
       {"type":"tts_end"}
       # (fallback)
       {"type":"tts_audio","format":"wav","sample_rate":24000,"audio_b64":"..."}
@@ -128,7 +128,6 @@ async def _tts_stream(ws, text: str) -> None:
     await ws.send(
         json.dumps({"type": "tts_begin", "format": "pcm_s16le", "sample_rate": 24000})
     )
-    seq = 0
     while True:
         item = await q.get()
         if item is None:
@@ -140,16 +139,8 @@ async def _tts_stream(ws, text: str) -> None:
             )
             await ws.send(json.dumps({"type": "tts_end"}))
             return
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "tts_chunk",
-                    "seq": seq,
-                    "audio_b64": base64.b64encode(item).decode("ascii"),
-                }
-            )
-        )
-        seq += 1
+        # Send raw PCM bytes as a binary WS message to avoid base64 overhead.
+        await ws.send(item)
     await ws.send(json.dumps({"type": "tts_end"}))
 
 
