@@ -127,6 +127,7 @@ export default function Home() {
   const ttsRebufferingRef = useRef<boolean>(false);
   const ttsMinBufferedMsRef = useRef<number>(Number.POSITIVE_INFINITY);
   const ttsMaxBufferedMsRef = useRef<number>(0);
+  const ttsStreamStatusRef = useRef<string>("idle");
 
   const ttsBufferedFrames = () => ttsRingCountRef.current;
 
@@ -197,6 +198,10 @@ export default function Home() {
     setTtsStreamStatus("idle");
   };
 
+  useEffect(() => {
+    ttsStreamStatusRef.current = ttsStreamStatus;
+  }, [ttsStreamStatus]);
+
   const ensureTtsContext = async (_sr: number) => {
     if (ttsCtxRef.current) return ttsCtxRef.current;
     // Prefer browser default sample rate (usually 48k). We'll resample incoming 24k PCM.
@@ -223,7 +228,7 @@ export default function Home() {
           ? ttsBufferedMsRef.current || (ttsBufferedFrames() / sr) * 1000
           : (ttsBufferedFrames() / sr) * 1000;
       setTtsStreamBufferedMs(ms);
-      if (ttsStreamStatus !== "idle") {
+      if (ttsStreamStatusRef.current !== "idle") {
         ttsMinBufferedMsRef.current = Math.min(ttsMinBufferedMsRef.current, ms);
         ttsMaxBufferedMsRef.current = Math.max(ttsMaxBufferedMsRef.current, ms);
         setTtsStreamMinBufferedMs(
