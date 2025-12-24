@@ -108,7 +108,7 @@ export default function Home() {
   const ttsSampleRateRef = useRef<number>(24000);
   const ttsStartedRef = useRef<boolean>(false);
   const ttsByteRemainderRef = useRef<Uint8Array>(new Uint8Array(0));
-  const ttsPrebufferMs = 900; // prebuffer before starting playback to absorb jitter
+  const ttsPrebufferMs = 1800; // prebuffer before starting playback to absorb jitter
   // Mid-stream rebuffering was causing audible "chops" even when the ring buffer never truly underruns.
   // Disable it and rely on actual underruns (zeros) as the only failure mode.
   const ttsLowWaterMs = 0;
@@ -142,6 +142,7 @@ export default function Home() {
   const ttsStreamChunksRef = useRef<number>(0);
   const ttsStreamFramesRef = useRef<number>(0);
   const ttsRxStartedAtMsRef = useRef<number>(0);
+  const ttsRxLastAtMsRef = useRef<number>(0);
   const ttsRxInSamplesRef = useRef<number>(0);
   const [ttsGenRealtimeX, setTtsGenRealtimeX] = useState<number>(0);
 
@@ -546,13 +547,20 @@ registerProcessor("tts-player", TtsPlayerProcessor);
         setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
         setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
       }
-      // Generation speed: (audio seconds produced) / (wall clock seconds elapsed)
-      if (ttsRxStartedAtMsRef.current > 0 && ttsSampleRateRef.current > 0) {
-        const elapsedS = Math.max(0.001, (Date.now() - ttsRxStartedAtMsRef.current) / 1000);
+      // Generation speed: (audio seconds produced) / (wall clock seconds elapsed).
+      // Freeze once the stream ends so it doesn't drift while idle/draining.
+      if (
+        ttsStreamStatusRef.current !== "idle" &&
+        ttsRxStartedAtMsRef.current > 0 &&
+        ttsRxLastAtMsRef.current >= ttsRxStartedAtMsRef.current &&
+        ttsSampleRateRef.current > 0
+      ) {
+        const elapsedS = Math.max(
+          0.001,
+          (ttsRxLastAtMsRef.current - ttsRxStartedAtMsRef.current) / 1000
+        );
         const audioS = ttsRxInSamplesRef.current / ttsSampleRateRef.current;
         setTtsGenRealtimeX(audioS / elapsedS);
-      } else {
-        setTtsGenRealtimeX(0);
       }
       // Track min/max only while actually playing (otherwise initial prebuffer would force min=0).
       if (
@@ -595,6 +603,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             if (!len) return;
             ttsStreamBytesRef.current += len;
             ttsStreamChunksRef.current += 1;
+            ttsRxLastAtMsRef.current = Date.now();
             const inRate = ttsSampleRateRef.current || 24000;
             const outRate = ttsCtxRef.current?.sampleRate ?? 48000;
             const inSamples = Math.floor(len / 2);
@@ -633,6 +642,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           ttsStreamBytesRef.current = 0;
           ttsStreamFramesRef.current = 0;
           ttsRxStartedAtMsRef.current = Date.now();
+          ttsRxLastAtMsRef.current = ttsRxStartedAtMsRef.current;
           ttsRxInSamplesRef.current = 0;
           setTtsStreamChunks(0);
           setTtsStreamBytes(0);
