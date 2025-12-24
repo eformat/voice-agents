@@ -22,6 +22,7 @@ Protocol (server -> client):
 import asyncio
 import base64
 import json
+import os
 import re
 import threading
 import uuid
@@ -112,6 +113,15 @@ async def _tts_stream(ws, text: str) -> None:
     loop = asyncio.get_running_loop()
     q: asyncio.Queue[bytes | None] = asyncio.Queue()
 
+    # Even if the upstream TTS stream yields large bursts, we re-chunk to small WS frames
+    # to reduce browser-side jitter/underruns.
+    ws_chunk_ms = int(os.getenv("WS_TTS_CHUNK_MS", "40"))
+    ws_chunk_samples = max(1, int(TTS_SAMPLE_RATE * (ws_chunk_ms / 1000.0)))
+    ws_chunk_bytes = ws_chunk_samples * 2  # int16 mono
+    # Ensure even number of bytes (whole int16 frames).
+    if ws_chunk_bytes % 2 != 0:
+        ws_chunk_bytes += 1
+
     def _producer() -> None:
         try:
             for chunk in stream_tts_pcm_chunks(text):
@@ -142,8 +152,9 @@ async def _tts_stream(ws, text: str) -> None:
             )
             await ws.send(json.dumps({"type": "tts_end"}))
             return
-        # Send raw PCM bytes as a binary WS message to avoid base64 overhead.
-        await ws.send(item)
+        # Send raw PCM bytes as binary WS messages, re-chunked to small frames.
+        for i in range(0, len(item), ws_chunk_bytes):
+            await ws.send(item[i : i + ws_chunk_bytes])
     await ws.send(json.dumps({"type": "tts_end"}))
 
 
