@@ -141,6 +141,7 @@ async def _tts_stream(ws, text: str) -> None:
             {"type": "tts_begin", "format": "pcm_s16le", "sample_rate": TTS_SAMPLE_RATE}
         )
     )
+    sent_first_token = False
     while True:
         item = await q.get()
         if item is None:
@@ -152,6 +153,10 @@ async def _tts_stream(ws, text: str) -> None:
             )
             await ws.send(json.dumps({"type": "tts_end"}))
             return
+        if not sent_first_token:
+            # "True" TTFT marker for the TTS stream: first streamed chunk from the model.
+            await ws.send(json.dumps({"type": "tts_first_token"}))
+            sent_first_token = True
         # Send raw PCM bytes as binary WS messages, re-chunked to small frames.
         for i in range(0, len(item), ws_chunk_bytes):
             await ws.send(item[i : i + ws_chunk_bytes])

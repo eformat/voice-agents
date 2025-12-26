@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 type WsMsg =
   | { type: "transcript"; text: string }
   | { type: "tts_begin"; format: "pcm_s16le"; sample_rate: number }
+  | { type: "tts_first_token" }
   | { type: "tts_end" }
   | {
       type: "graph_result";
@@ -130,7 +131,7 @@ export default function Home() {
   const ttsWorkletPlayingRef = useRef<boolean>(false);
   const ttsStatsLatchedRef = useRef<boolean>(false);
   const ttsReqStartedAtMsRef = useRef<number>(0);
-  const ttsBeginAtMsRef = useRef<number>(0);
+  const ttsFirstTokenAtMsRef = useRef<number>(0);
   const ttsFirstAudioAtMsRef = useRef<number>(0);
 
   // Shared ring buffer (SharedArrayBuffer + Atomics) to avoid per-chunk port messaging.
@@ -703,13 +704,10 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           ttsStatsLatchedRef.current = false;
           ttsSampleRateRef.current = msg.sample_rate;
           ttsReceivingBinaryRef.current = true;
-          ttsBeginAtMsRef.current = Date.now();
+          // For TTFT we use `tts_first_token` (set below). `tts_begin` is just stream metadata.
           ttsFirstAudioAtMsRef.current = 0;
-          if (ttsReqStartedAtMsRef.current > 0) {
-            setTtsTtftMs(ttsBeginAtMsRef.current - ttsReqStartedAtMsRef.current);
-          } else {
-            setTtsTtftMs(0);
-          }
+          ttsFirstTokenAtMsRef.current = 0;
+          setTtsTtftMs(0);
           setTtsTtfbMs(0);
           setTtsStreamStatus("buffering");
           ttsStreamChunksRef.current = 0;
@@ -755,6 +753,14 @@ registerProcessor("tts-player", TtsPlayerProcessor);
             );
           }
         }
+        if (msg.type === "tts_first_token") {
+          if (ttsFirstTokenAtMsRef.current === 0) {
+            ttsFirstTokenAtMsRef.current = Date.now();
+            if (ttsReqStartedAtMsRef.current > 0) {
+              setTtsTtftMs(ttsFirstTokenAtMsRef.current - ttsReqStartedAtMsRef.current);
+            }
+          }
+        }
         if (msg.type === "tts_end") {
           // Drain: keep playing until queue is empty; then stop the processor.
           setTtsStreamStatus("draining");
@@ -769,8 +775,8 @@ registerProcessor("tts-player", TtsPlayerProcessor);
           ttsStatsLatchedRef.current = true;
           setTtsStreamUnderruns(ttsWorkletUnderrunsRef.current || 0);
           setTtsStreamRebuffers(ttsWorkletRebuffersRef.current || 0);
-          if (ttsReqStartedAtMsRef.current > 0 && ttsBeginAtMsRef.current > 0) {
-            setTtsTtftMs(ttsBeginAtMsRef.current - ttsReqStartedAtMsRef.current);
+          if (ttsReqStartedAtMsRef.current > 0 && ttsFirstTokenAtMsRef.current > 0) {
+            setTtsTtftMs(ttsFirstTokenAtMsRef.current - ttsReqStartedAtMsRef.current);
           }
           if (ttsReqStartedAtMsRef.current > 0 && ttsFirstAudioAtMsRef.current > 0) {
             setTtsTtfbMs(ttsFirstAudioAtMsRef.current - ttsReqStartedAtMsRef.current);
@@ -925,7 +931,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       return;
     }
     ttsReqStartedAtMsRef.current = Date.now();
-    ttsBeginAtMsRef.current = 0;
+    ttsFirstTokenAtMsRef.current = 0;
     ttsFirstAudioAtMsRef.current = 0;
     setTtsTtftMs(0);
     setTtsTtfbMs(0);
@@ -939,7 +945,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       return;
     }
     ttsReqStartedAtMsRef.current = Date.now();
-    ttsBeginAtMsRef.current = 0;
+    ttsFirstTokenAtMsRef.current = 0;
     ttsFirstAudioAtMsRef.current = 0;
     setTtsTtftMs(0);
     setTtsTtfbMs(0);
@@ -955,7 +961,7 @@ registerProcessor("tts-player", TtsPlayerProcessor);
       return;
     }
     ttsReqStartedAtMsRef.current = Date.now();
-    ttsBeginAtMsRef.current = 0;
+    ttsFirstTokenAtMsRef.current = 0;
     ttsFirstAudioAtMsRef.current = 0;
     setTtsTtftMs(0);
     setTtsTtfbMs(0);
