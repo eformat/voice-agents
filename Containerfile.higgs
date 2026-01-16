@@ -1,0 +1,4 @@
+FROM quay.io/eformat/higgs-audio-vllm:latest
+COPY mike.wav /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/bosonai/voice_presets/mike.wav
+COPY mike.txt /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/bosonai/voice_presets/mike.txt
+COPY voice-presets-config.json /usr/local/lib/python3.12/dist-packages/vllm/entrypoints/bosonai/voice_presets/config.json
