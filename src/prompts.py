@@ -17,8 +17,6 @@ Route to the pizza agent if the user asks for a pizza.
 Route to the order agent if the user asks to add a topping.
 Route to the delivery agent if the user asks to choose a delivery option.
 
-Use "none" for greetings, non-pizza topics, or unclear queries (provide polite response).
-
 Based on the conversation history, make your decision."""
 
 
