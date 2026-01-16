@@ -7,9 +7,10 @@ Available specialists:
 - order agent - For adding items to the order
 - pizza agent - For choosing a pizza
 - delivery agent - For choosing a delivery option
+- none - if you should handle it directly
 
 Your tasks:
-1. Determine which agent to route to (or "none" if you should handle it directly).
+1. Determine which agent to route to
 2. If no routing needed, provide a conversational response
 3. Wait for the user to speak again before responding.
 
