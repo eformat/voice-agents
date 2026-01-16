@@ -31,8 +31,6 @@ TTS_API_KEY = os.getenv("TTS_API_KEY", os.getenv("API_KEY", ""))
 # A smaller default yields smoother realtime playback in the browser.
 TTS_AUDIO_CHUNK_SIZE = int(os.getenv("TTS_AUDIO_CHUNK_SIZE", "5"))
 TTS_TIMEOUT_S = float(os.getenv("TTS_TIMEOUT_S", "30"))
-TTS_VOICE_WAV = os.getenv("TTS_VOICE_WAV", "")  # optional override
-TTS_VOICE_TXT = os.getenv("TTS_VOICE_TXT", "")  # optional override
 
 STT_URL = os.getenv("STT_URL", "STT_URL")
 STT_MODEL = os.getenv("STT_MODEL", "STT_MODEL")
@@ -189,16 +187,8 @@ def stream_tts_pcm_chunks(text: str) -> Iterator[bytes]:
     # Voice cloning (Higgs): condition the chat with a reference audio + its transcript,
     # matching the pattern from `test-tts-stream.py`.
     use_voice_clone = voice_mode in {"belinda", "clone", "voice_clone"}
-    voice_wav = (
-        Path(TTS_VOICE_WAV)
-        if TTS_VOICE_WAV
-        else Path(__file__).resolve().parents[1] / "belinda.wav"
-    )
-    voice_txt = (
-        Path(TTS_VOICE_TXT)
-        if TTS_VOICE_TXT
-        else Path(__file__).resolve().parents[1] / "belinda.txt"
-    )
+    voice_wav = Path(__file__).resolve().parents[1] / f"{TTS_VOICE}.wav"
+    voice_txt = Path(__file__).resolve().parents[1] / f"{TTS_VOICE}.txt"
 
     client = OpenAI(
         api_key=TTS_API_KEY or "fake",
