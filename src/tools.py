@@ -186,7 +186,7 @@ def stream_tts_pcm_chunks(text: str) -> Iterator[bytes]:
 
     # Voice cloning (Higgs): condition the chat with a reference audio + its transcript,
     # matching the pattern from `test-tts-stream.py`.
-    use_voice_clone = voice_mode in {"belinda", "clone", "voice_clone"}
+    use_voice_clone = voice_mode in {"belinda", "mike", "clone", "voice_clone"}
     voice_wav = Path(__file__).resolve().parents[1] / f"{TTS_VOICE}.wav"
     voice_txt = Path(__file__).resolve().parents[1] / f"{TTS_VOICE}.txt"
 
