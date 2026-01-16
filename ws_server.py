@@ -24,6 +24,7 @@ import base64
 import json
 import os
 import re
+import signal
 import threading
 import uuid
 from typing import Any
@@ -318,9 +319,29 @@ async def main(host: str = "0.0.0.0", port: int = 8765):
         raise RuntimeError(
             "Missing dependency: websockets. Install with `pip install websockets`."
         )
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def _request_shutdown(signame: str) -> None:
+        print(f"Received {signame}. Forcing shutdown...", flush=True)
+        # Cancel all tasks so asyncio.run can unwind quickly.
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
+        if not stop_event.is_set():
+            stop_event.set()
+        # Hard-exit after a short delay in case worker threads block exit.
+        loop.call_later(0.5, lambda: os._exit(0))
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, _request_shutdown, "SIGINT")
+        loop.add_signal_handler(signal.SIGTERM, _request_shutdown, "SIGTERM")
+    except NotImplementedError:
+        signal.signal(signal.SIGINT, lambda *_: _request_shutdown("SIGINT"))
+        signal.signal(signal.SIGTERM, lambda *_: _request_shutdown("SIGTERM"))
+
     async with websockets.serve(handler, host, port, max_size=20 * 1024 * 1024):
         print(f"WS server listening on ws://{host}:{port}", flush=True)
-        await asyncio.Future()
+        await stop_event.wait()
 
 
 if __name__ == "__main__":
