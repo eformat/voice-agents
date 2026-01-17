@@ -40,6 +40,7 @@ llm = ChatOpenAI(
     timeout=30,
     base_url=BASE_URL,
     api_key=API_KEY,
+    use_responses_api=True,
 )
 
 # ============================================================
