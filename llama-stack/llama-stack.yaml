@@ -1,0 +1,48 @@
+---
+apiVersion: llamastack.io/v1alpha1
+kind: LlamaStackDistribution
+metadata:
+  annotations:
+    openshift.io/display-name: llama-stack
+  labels:
+    opendatahub.io/dashboard: 'true'
+  name: llamastack-with-config
+spec:
+  replicas: 1
+  server:
+    containerSpec:
+      name: llama-stack
+      port: 8321
+      env:
+        - name: VLLM_TLS_VERIFY
+          value: 'false'
+        - name: MILVUS_DB_PATH
+          value: ~/.llama/milvus.db
+        - name: FMS_ORCHESTRATOR_URL
+          value: 'http://localhost'
+        - name: LLAMA_STACK_CONFIG_DIR
+          value: /opt/app-root/src/.llama/distributions/rh/
+        - name: TELEMETRY_SINKS
+          value: 'console, otel_trace, otel_metric'
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://data-science-collector-collector.redhat-ods-monitoring.svc.cluster.local:4318
+        - name: OTEL_SERVICE_NAME
+          value: llamastack
+        - name: LLAMA_4_SCOUT_17B_16E_W4A16_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: llama-4-scout-17b-16e-w4a16
+              key: apiKey
+        - name: WHISPER_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: whisper
+              key: apiKey
+        - name: LLAMA_STACK_LOGGING
+          value: all=debug
+    distribution:
+      #name: remote-vllm
+      name: rh-dev
+      #image: quay.io/eformat/distribution-remote-vllm:0.2.15
+    userConfig:
+      configMapName: llama-stack-config

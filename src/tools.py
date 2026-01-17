@@ -18,6 +18,7 @@ import requests
 import simpleaudio as sa
 from dotenv import load_dotenv
 from langchain.tools import tool
+from openai import OpenAI
 
 load_dotenv()
 
@@ -171,13 +172,6 @@ def stream_tts_pcm_chunks(text: str) -> Iterator[bytes]:
         raise RuntimeError(
             f"TTS_URL must be an OpenAI-compatible base URL (got {TTS_URL!r})."
         )
-
-    try:
-        from openai import OpenAI
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "Missing dependency: openai. Install with `pip install openai`."
-        ) from exc
 
     voice_mode = (TTS_VOICE or "").strip().lower()
 
