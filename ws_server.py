@@ -35,6 +35,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from websockets.exceptions import ConnectionClosed
 
+from src.content_utils import normalize_content_to_text
 from src.graph import build_graph
 from src.tools import (
     TTS_SAMPLE_RATE,
@@ -49,10 +50,11 @@ set_debug(True)
 def _safe_messages(result: dict) -> list[dict[str, str]]:
     msgs = []
     for m in result.get("messages", []):
+        content = normalize_content_to_text(getattr(m, "content", str(m)))
         msgs.append(
             {
                 "role": getattr(m, "name", None) or getattr(m, "type", "message"),
-                "content": getattr(m, "content", str(m)),
+                "content": content,
             }
         )
     return msgs
@@ -75,7 +77,7 @@ def _select_tts_text(result: dict) -> str:
     """Pick a reasonable text snippet from the graph result to speak."""
     ints = _interrupt_values(result)
     if ints and isinstance(ints[0], dict):
-        prompt = (ints[0].get("prompt") or "").strip()
+        prompt = normalize_content_to_text(ints[0].get("prompt") or "")
         m = _TTS_CALL_RE.search(prompt)
         if m:
             return m.group(1).strip()
@@ -83,7 +85,7 @@ def _select_tts_text(result: dict) -> str:
 
     for m in reversed(result.get("messages", []) or []):
         role = getattr(m, "name", None) or getattr(m, "type", "")
-        content = (getattr(m, "content", "") or "").strip()
+        content = normalize_content_to_text(getattr(m, "content", "") or "")
         if not content:
             continue
         if content.startswith("Routing to"):

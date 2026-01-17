@@ -14,6 +14,7 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from src.content_utils import normalize_content_to_text
 from src.prompts import (
     DELIVERY_AGENT_PROMPT,
     ORDER_AGENT_PROMPT,
@@ -118,9 +119,6 @@ def _invoke_agent(agent, prompt: str, messages: list, agent_name: str):
     return response_message
 
 
-# ============================================================
-# Node Functions
-# ============================================================
 def supervisor_command_node(state: SupervisorState) -> Command:
     """Supervisor for Command routing - uses structured output."""
     # Use structured output to get routing decision
@@ -203,7 +201,9 @@ def _interrupt_payload(state: SupervisorState, agent: str) -> dict:
     last = state.get("messages", [])[-1] if state.get("messages") else None
     return {
         "agent": agent,
-        "prompt": getattr(last, "content", "") if last else "",
+        "prompt": normalize_content_to_text(getattr(last, "content", ""))
+        if last
+        else "",
         "pizza_type": state.get("pizza_type", ""),
     }
 
