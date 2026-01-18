@@ -10,3 +10,13 @@ A voice agent demo simulating "Pizza Palace" - ordering a pizza.
 - Agent handoffs using Langchain + Langgraph
 - Next.js web ui using websockets
 - Python websocket server backend
+
+
+## 🏃‍♀️ Running the docs site
+
+If you have Node installed, you can start the site with the following command from within the `top directory of the git repo` directory:
+
+```bash
+npm i docsify-cli -g
+docsify serve docs/
+```
