@@ -1,1 +1,3 @@
-# LLama Stack
+# Llama Stack
+
+Using LlamaStack.

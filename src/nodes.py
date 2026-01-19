@@ -33,21 +33,23 @@ MODEL_NAME = os.getenv("MODEL_NAME", "MODEL_NAME")
 BASE_URL = os.getenv("BASE_URL", "BASE_URL")
 API_KEY = os.getenv("API_KEY", "API_KEY")
 
+# ============================================================
+# Configuration
+# ============================================================
+TEMPERATURE = 0.2
+MAX_RETRIES = 2
+TIMEOUT = 30
+
 llm = ChatOpenAI(
     streaming=True,
     model=MODEL_NAME,
-    temperature=0.2,
-    max_retries=2,
-    timeout=30,
+    temperature=TEMPERATURE,
+    max_retries=MAX_RETRIES,
+    timeout=TIMEOUT,
     base_url=BASE_URL,
     api_key=API_KEY,
     use_responses_api=True,
 )
-
-# ============================================================
-# Configuration
-# ============================================================
-TEMPERATURE = 0.0
 
 # ============================================================
 # Agent Creation
@@ -55,8 +57,8 @@ TEMPERATURE = 0.0
 # Create agents with domain-specific tools using create_agent
 # Each agent is a compiled subgraph that can invoke tools during reasoning
 supervisor_agent = create_agent(
-    model=llm,  # init_chat_model(MODEL_NAME, temperature=TEMPERATURE),
-    tools=[],  # Add to order tool
+    model=llm,
+    tools=[],
 )
 
 order_agent = create_agent(
