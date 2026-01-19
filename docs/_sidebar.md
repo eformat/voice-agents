@@ -9,7 +9,7 @@
 * [🍕 Pizza Shop](5-application/1-intro.md)
   * [🤖 Agents + Prompts](5-application/2-agents-prompts.md)
   * [👋 Langgraph + Agent handoffs](5-application/3-handoffs.md)
-  * [☑️ Ordering a Pizza - Putting it all together](5-application/4-demo.md)
+  * [☑️ Ordering a Pizza](5-application/4-demo.md)
 * [📈 Observability](6-observability/1-intro.md)
   * [🦙 LamaStack](6-observability/2-lls.md)
 * [📡 Advanced](7-advanced/1-intro.md)
