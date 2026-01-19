@@ -24,12 +24,20 @@ python ws_server.py
 
 ## Client Side
 
-From the client side pod.
+```bash
+cd web
+```
 
 Install requirements.
 
 ```bash
-npm -i
+npm i
+```
+
+Build a production version.
+
+```bash
+npm run build
 ```
 
 Run the Web UI.
