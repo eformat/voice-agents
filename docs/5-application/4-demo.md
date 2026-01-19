@@ -46,6 +46,12 @@ Run the Web UI.
 npx next dev -H 0.0.0.0 -p 3000
 ```
 
+Apply client side routing.
+
+```bash
+oc apply -f web-ui-routing.yaml
+```
+
 ![./images/client-side.png](images/client-side.png)
 
 Browse to the Web UI Route.
