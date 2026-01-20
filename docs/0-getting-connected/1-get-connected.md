@@ -25,7 +25,9 @@ After logging on to OpenShift you will open the OpenShift AI platform from the A
    📝 Note: In this workshop we have not enabled single sign-on so OpenShift AI will prompt you to log in.
 
 3. Log in using the credentials for the workshop:
+
       **Username:** (You will be provided with the username on the day.)
+
       **Password:** (You will be provided with the password on the day.)
 
 4. Click **Login**
@@ -41,8 +43,11 @@ After logging on to OpenShift you will open the OpenShift AI platform from the A
     ![images/import-voice-workbench-image-1.png](images/import-voice-workbench-image-1.png)
 
 2. Fill in the image details:
+
     **Image Location**: quay.io/eformat/voice-notebook:latest
+
     **Name**: voice-notebook
+
     **Hardware profile**: nvidia.com/gpu
 
     ![images/import-voice-workbench-image-2.png](images/import-voice-workbench-image-2.png)
