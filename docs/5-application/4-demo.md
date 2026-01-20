@@ -14,7 +14,7 @@ Install requirements.
 uv pip install -r requirement.txt
 ```
 
-Run web socket server.
+Run web socket server in a notebook shell.
 
 ```bash
 python ws_server.py
@@ -40,19 +40,19 @@ Build a production version.
 npm run build
 ```
 
-Run the Web UI.
+Run the Web UI in a notebook shell.
 
 ```bash
 npx next dev -H 0.0.0.0 -p 3000
 ```
+
+![./images/client-side.png](images/client-side.png)
 
 Apply client side routing.
 
 ```bash
 oc apply -f web-ui-routing.yaml
 ```
-
-![./images/client-side.png](images/client-side.png)
 
 Browse to the Web UI Route.
 
