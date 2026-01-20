@@ -20,3 +20,12 @@ If you have Node installed, you can start the site with the following command fr
 npm i docsify-cli -g
 docsify serve docs/
 ```
+
+## Install tutorial link
+
+In an OpenShift cluster
+
+```bash
+oc apply -f odh-document.yaml
+oc -n redhat-ods-applications delete pod -l app=rhods-dashboard
+```
