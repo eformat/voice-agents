@@ -1,6 +1,8 @@
 # Advanced
 
-Voice Cloning - i wanna be like **mike**
+## Voice Cloning
+
+i wanna be like **mike**
 
 ```bash
 curl -X POST $MODEL_URL/v1/audio/speech \
@@ -13,3 +15,12 @@ curl -X POST $MODEL_URL/v1/audio/speech \
   }' \
   --output - | ffmpeg -f s16le -ar 24000 -ac 1 -i pipe:0 -f wav - | ffplay -nodisp -autoexit -
 ```
+
+## Extension Exercises
+
+How Might We extend the app?
+
+- Add $$ pricing for pizzas
+- Add S|M|L|XL pizza size options
+- Extract more session data (not just pizza type)
+- Add messaging/storage for your oders
