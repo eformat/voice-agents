@@ -61,7 +61,7 @@ Browse to the Web UI Route.
 Connect to the web socket using the notebook proxy.
 
 ```bash
-wss://data-science-gateway.apps.$CLUSTER_DOMAIN/notebook/agent-demo/voice/proxy/8765/admin
+wss://data-science-gateway.apps.<CLUSTER_DOMAIN>/notebook/agent-demo/voice/proxy/8765/admin
 ```
 
 ![./images/connect-web-socket.png](images/connect-web-socket.png)
