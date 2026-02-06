@@ -3,7 +3,6 @@ apiVersion: v1
 kind: Service
 metadata:
   name: higgs-audio-predictor
-  namespace: llama-serving
 spec:
   selector:
     app: higgs-audio-predictor
@@ -16,7 +15,6 @@ kind: Deployment
 apiVersion: apps/v1
 metadata:
   name: higgs-audio-predictor
-  namespace: llama-serving
   labels:
     app: higgs-audio-predictor
     component: predictor
@@ -32,7 +30,6 @@ spec:
   template:
     metadata:
       name: higgs-audio-predictor
-      namespace: llama-serving
       creationTimestamp: null
       labels:
         app: higgs-audio-predictor
@@ -116,7 +113,7 @@ spec:
           emptyDir: {}
       dnsPolicy: ClusterFirst
       nodeSelector:
-        nvidia.com/gpu.product: NVIDIA-L40S-SHARED
+        nvidia.com/gpu.product: NVIDIA-L40S
       tolerations:
         - key: nvidia.com/gpu
           operator: Exists

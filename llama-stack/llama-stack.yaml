@@ -33,6 +33,11 @@ spec:
             secretKeyRef:
               name: llama-4-scout-17b-16e-w4a16
               key: apiKey
+        - name: GPT_OSS_20B_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gpt-oss-20b
+              key: apiKey
         - name: WHISPER_API_TOKEN
           valueFrom:
             secretKeyRef:
