@@ -320,18 +320,38 @@ export default function Home() {
   }, []);
 
   // ─── WebSocket ────────────────────────────────────────────────────
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectDelayRef = useRef<number>(1000);
+  const shouldReconnectRef = useRef<boolean>(true);
+
+  const scheduleReconnect = () => {
+    if (!shouldReconnectRef.current) return;
+    if (reconnectTimerRef.current) return;
+    const delay = reconnectDelayRef.current;
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      connect();
+    }, delay);
+    // Exponential backoff capped at 10s
+    reconnectDelayRef.current = Math.min(delay * 2, 10000);
+  };
+
   const connect = () => {
     setError("");
+    shouldReconnectRef.current = true;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       wsRef.current = ws;
       setConnected(true);
       setStatus("connected");
+      reconnectDelayRef.current = 1000; // reset backoff on success
     };
     ws.onclose = () => {
       setConnected(false);
       setStatus("disconnected");
+      wsRef.current = null;
+      scheduleReconnect();
     };
     ws.onerror = () => setError("WebSocket error");
     ws.onmessage = async (evt) => {
@@ -466,10 +486,21 @@ export default function Home() {
   };
 
   const disconnect = () => {
+    shouldReconnectRef.current = false;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     wsRef.current?.close();
     wsRef.current = null;
     setConnected(false);
   };
+
+  // Auto-connect on mount
+  useEffect(() => {
+    connect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ─── Microphone recording ────────────────────────────────────────
   const startRecording = async () => {
@@ -553,7 +584,10 @@ export default function Home() {
 
   useEffect(() => {
     return () => {
-      disconnect();
+      shouldReconnectRef.current = false;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      wsRef.current?.close();
+      wsRef.current = null;
       mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
       audioCtxRef.current?.close();
       ttsCtxRef.current?.close();
