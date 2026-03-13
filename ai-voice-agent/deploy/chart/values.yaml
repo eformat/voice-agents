@@ -62,11 +62,10 @@ mlflow:
     - "--port"
     - "5500"
     - "--backend-store-uri"
-    - "/mlflow/mlruns"
+    - "sqlite:////mlflow/mlflow.db"
     - "--default-artifact-root"
     - "/mlflow/mlartifacts"
-    - "--allowed-hosts"
-    - "*"
+    - "--disable-security-middleware"
   persistence:
     size: 5Gi
     storageClass: ""
