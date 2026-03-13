@@ -130,7 +130,9 @@ async def _tts_stream(ws, text: str) -> None:
     await ws.send(
         json.dumps({"type": "tts_begin", "format": "pcm_s16le", "sample_rate": TTS_SAMPLE_RATE})
     )
-    await asyncio.to_thread(_producer)
+    # Run the producer in a thread WITHOUT awaiting it so the consumer loop
+    # below can send chunks to the browser as they arrive (true streaming).
+    loop.run_in_executor(None, _producer)
 
     buffered = bytearray()
     while True:
