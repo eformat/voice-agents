@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-voice-agent.fullname" . }}-backend
+  labels:
+    {{- include "ai-voice-agent.backend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "ai-voice-agent.backend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ai-voice-agent.backend.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          ports:
+            - name: ws
+              containerPort: {{ .Values.backend.port }}
+              protocol: TCP
+          env:
+            {{- range $key, $val := .Values.backend.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-voice-agent.fullname" . }}-backend
+                  key: API_KEY
+            - name: TTS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-voice-agent.fullname" . }}-backend
+                  key: TTS_API_KEY
+            - name: STT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-voice-agent.fullname" . }}-backend
+                  key: STT_TOKEN
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: ws
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: ws
+            initialDelaySeconds: 10
+            periodSeconds: 30

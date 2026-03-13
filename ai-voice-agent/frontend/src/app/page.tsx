@@ -110,7 +110,15 @@ function TalkingPizza({ isTalking, className }: { isTalking: boolean; className?
 
 // ─── Main Component ─────────────────────────────────────────────────────────────
 export default function Home() {
-  const [wsUrl, setWsUrl] = useState("ws://127.0.0.1:8765");
+  const [wsUrl, setWsUrl] = useState(() => {
+    if (typeof window === "undefined") return "ws://127.0.0.1:8765";
+    // In production (served via nginx), proxy through same origin at /ws.
+    // In local dev, connect directly to the backend.
+    const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+    if (isLocalDev) return "ws://127.0.0.1:8765";
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/ws`;
+  });
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState<string>("idle");
   const [transcript, setTranscript] = useState<string>("");

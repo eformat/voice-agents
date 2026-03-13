@@ -1,4 +1,4 @@
-.PHONY: frontend-run backend-run build-frontend build-backend build-all run-all podman-frontend-build podman-backend-build podman-build-all podman-push-all
+.PHONY: frontend-run backend-run build-frontend build-backend build-all run-all podman-frontend-build podman-backend-build podman-build-all podman-push-all helm-deploy
 
 build-all: build-frontend build-backend
 
@@ -29,3 +29,6 @@ podman-frontend-build:
 podman-push-all:
 	podman push quay.io/eformat/ai-voice-agent-backend:latest
 	podman push quay.io/eformat/ai-voice-agent-frontend:latest
+
+helm-deploy:
+	helm upgrade --install ai-voice-agent ./deploy/chart $(HELM_ARGS)

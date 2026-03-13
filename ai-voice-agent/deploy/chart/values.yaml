@@ -1,0 +1,55 @@
+backend:
+  image:
+    repository: quay.io/eformat/ai-voice-agent-backend
+    tag: latest
+    pullPolicy: Always
+  replicas: 1
+  port: 8765
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  env:
+    MODEL_NAME: ""
+    BASE_URL: ""
+    TTS_URL: ""
+    TTS_MODEL: ""
+    TTS_VOICE: "belinda"
+    TTS_SAMPLE_RATE: "24000"
+    TTS_AUDIO_CHUNK_SIZE: "5"
+    TTS_TIMEOUT_S: "30"
+    STT_URL: ""
+    STT_MODEL: "whisper"
+  secret:
+    create: true
+    API_KEY: ""
+    TTS_API_KEY: ""
+    STT_TOKEN: ""
+
+frontend:
+  image:
+    repository: quay.io/eformat/ai-voice-agent-frontend
+    tag: latest
+    pullPolicy: Always
+  replicas: 1
+  port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+route:
+  enabled: true
+  host: ""
+  # Set to true to create a separate Route for the WebSocket backend.
+  # By default the WebSocket is proxied through nginx on the frontend (no extra route needed).
+  exposeWebsocket: false
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

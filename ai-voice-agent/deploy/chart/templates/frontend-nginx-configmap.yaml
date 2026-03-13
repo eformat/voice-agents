@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-voice-agent.fullname" . }}-nginx
+  labels:
+    {{- include "ai-voice-agent.frontend.labels" . | nindent 4 }}
+data:
+  nginx.conf: |
+    worker_processes  1;
+
+    events {
+        worker_connections  1024;
+    }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        access_log  /dev/stdout;
+        error_log   /dev/stderr info;
+
+        sendfile        on;
+        keepalive_timeout  65;
+
+        # WebSocket upstream to backend service (cluster-internal)
+        upstream ws_backend {
+            server {{ include "ai-voice-agent.fullname" . }}-backend:{{ .Values.backend.port }};
+        }
+
+        server {
+            listen       0.0.0.0:8080;
+            server_name  _;
+
+            root   /usr/share/nginx/html;
+            index  index.html;
+
+            # Required for SharedArrayBuffer (audio worklet ring buffer)
+            add_header Cross-Origin-Opener-Policy   "same-origin" always;
+            add_header Cross-Origin-Embedder-Policy "require-corp" always;
+            add_header Cross-Origin-Resource-Policy  "same-origin" always;
+            add_header Origin-Agent-Cluster          "?1" always;
+
+            # WebSocket proxy — frontend connects to wss://<host>/ws
+            location /ws {
+                proxy_pass http://ws_backend;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_read_timeout 3600s;
+                proxy_send_timeout 3600s;
+            }
+
+            location / {
+                try_files $uri $uri/ /index.html;
+            }
+        }
+    }

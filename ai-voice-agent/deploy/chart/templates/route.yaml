@@ -1,0 +1,45 @@
+{{- if .Values.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "ai-voice-agent.fullname" . }}
+  labels:
+    {{- include "ai-voice-agent.frontend.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.route.host }}
+  host: {{ .Values.route.host }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ include "ai-voice-agent.fullname" . }}-frontend
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: {{ .Values.route.tls.termination }}
+    insecureEdgeTerminationPolicy: {{ .Values.route.tls.insecureEdgeTerminationPolicy }}
+  wildcardPolicy: None
+{{- end }}
+---
+{{- if and .Values.route.enabled .Values.route.exposeWebsocket }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "ai-voice-agent.fullname" . }}-ws
+  labels:
+    {{- include "ai-voice-agent.backend.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.route.host }}
+  host: {{ .Values.route.host | replace "voice-agent" "voice-agent-ws" }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ include "ai-voice-agent.fullname" . }}-backend
+    weight: 100
+  port:
+    targetPort: ws
+  tls:
+    termination: {{ .Values.route.tls.termination }}
+    insecureEdgeTerminationPolicy: {{ .Values.route.tls.insecureEdgeTerminationPolicy }}
+  wildcardPolicy: None
+{{- end }}

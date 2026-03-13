@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-voice-agent.fullname" . }}-frontend
+  labels:
+    {{- include "ai-voice-agent.frontend.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.frontend.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "ai-voice-agent.frontend.selectorLabels" . | nindent 4 }}

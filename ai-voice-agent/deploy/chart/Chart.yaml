@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ai-voice-agent
+description: Red Hat Pizza Shop - AI Voice Agent
+version: 0.1.0
+appVersion: "1.0.0"
+type: application

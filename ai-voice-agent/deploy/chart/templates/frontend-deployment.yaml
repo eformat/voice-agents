@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-voice-agent.fullname" . }}-frontend
+  labels:
+    {{- include "ai-voice-agent.frontend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "ai-voice-agent.frontend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ai-voice-agent.frontend.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/nginx-config: {{ include (print $.Template.BasePath "/frontend-nginx-configmap.yaml") . | sha256sum }}
+    spec:
+      containers:
+        - name: frontend
+          image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.frontend.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: {{ include "ai-voice-agent.fullname" . }}-nginx
