@@ -4,7 +4,7 @@ icons: font
 
 Putting it all together - Running the demo yourself.
 
-video::d_Ba9Io6AgI[youtube]
+video::X-BNR-7Umiw[youtube]
 
 == Server Side
 
