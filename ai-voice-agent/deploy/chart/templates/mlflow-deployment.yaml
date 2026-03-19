@@ -15,6 +15,7 @@ spec:
       labels:
         {{- include "ai-voice-agent.mlflow.selectorLabels" . | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "ai-voice-agent.fullname" . }}-mlflow
       containers:
         - name: mlflow
           image: "{{ .Values.mlflow.image.repository }}:{{ .Values.mlflow.image.tag }}"
@@ -44,8 +45,36 @@ spec:
               port: http
             initialDelaySeconds: 10
             periodSeconds: 30
+        {{- if .Values.mlflow.oauth.enabled }}
+        - name: oauth-proxy
+          image: "{{ .Values.mlflow.oauth.image.repository }}:{{ .Values.mlflow.oauth.image.tag }}"
+          imagePullPolicy: {{ .Values.mlflow.oauth.image.pullPolicy | default "Always" }}
+          args:
+            - --https-address=:8443
+            - --http-address=
+            - --upstream=http://localhost:{{ .Values.mlflow.port }}
+            - --provider=openshift
+            - --openshift-service-account={{ include "ai-voice-agent.fullname" . }}-mlflow
+            - --tls-cert=/etc/tls/private/tls.crt
+            - --tls-key=/etc/tls/private/tls.key
+            - --cookie-secret={{ .Values.mlflow.oauth.cookieSecret | default "SECRET" }}
+            - --pass-user-headers=true
+            - --pass-access-token=false
+          ports:
+            - name: oauth
+              containerPort: 8443
+              protocol: TCP
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/tls/private
+        {{- end }}
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "ai-voice-agent.fullname" . }}-mlflow
+        {{- if .Values.mlflow.oauth.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "ai-voice-agent.fullname" . }}-mlflow-tls
+        {{- end }}
 {{- end }}

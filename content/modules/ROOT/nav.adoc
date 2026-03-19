@@ -12,5 +12,6 @@
 ** xref:pizza-shop-handoffs.adoc[LangGraph and Handoffs]
 ** xref:pizza-shop-demo.adoc[Ordering a Pizza]
 * xref:observability-intro.adoc[Observability]
+** xref:mlflow.adoc[MLflow]
 ** xref:llamastack.adoc[LlamaStack]
 * xref:advanced.adoc[Advanced]

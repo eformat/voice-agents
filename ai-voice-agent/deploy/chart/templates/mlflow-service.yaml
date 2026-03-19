@@ -5,6 +5,10 @@ metadata:
   name: {{ include "ai-voice-agent.fullname" . }}-mlflow
   labels:
     {{- include "ai-voice-agent.mlflow.labels" . | nindent 4 }}
+  {{- if .Values.mlflow.oauth.enabled }}
+  annotations:
+    service.alpha.openshift.io/serving-cert-secret-name: {{ include "ai-voice-agent.fullname" . }}-mlflow-tls
+  {{- end }}
 spec:
   type: ClusterIP
   ports:
@@ -12,6 +16,12 @@ spec:
       port: {{ .Values.mlflow.port }}
       targetPort: http
       protocol: TCP
+    {{- if .Values.mlflow.oauth.enabled }}
+    - name: oauth
+      port: 8443
+      targetPort: oauth
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "ai-voice-agent.mlflow.selectorLabels" . | nindent 4 }}
 {{- end }}

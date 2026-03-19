@@ -60,9 +60,17 @@ spec:
     name: {{ include "ai-voice-agent.fullname" . }}-mlflow
     weight: 100
   port:
+    {{- if .Values.mlflow.oauth.enabled }}
+    targetPort: oauth
+    {{- else }}
     targetPort: http
+    {{- end }}
   tls:
+    {{- if .Values.mlflow.oauth.enabled }}
+    termination: reencrypt
+    {{- else }}
     termination: {{ .Values.route.tls.termination }}
+    {{- end }}
     insecureEdgeTerminationPolicy: {{ .Values.route.tls.insecureEdgeTerminationPolicy }}
   wildcardPolicy: None
 {{- end }}

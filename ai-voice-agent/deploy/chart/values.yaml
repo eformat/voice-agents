@@ -76,6 +76,13 @@ mlflow:
     limits:
       cpu: 1000m
       memory: 2048Mi
+  oauth:
+    enabled: true
+    image:
+      repository: quay.io/openshift/origin-oauth-proxy
+      tag: latest
+      pullPolicy: Always
+    cookieSecret: ""
 
 route:
   enabled: true
