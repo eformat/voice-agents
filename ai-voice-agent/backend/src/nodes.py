@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Annotated, Literal
 
 from dotenv import load_dotenv
+import httpx
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -101,7 +103,21 @@ GUARDRAILS_DETECTORS_OUTPUT_SCREEN = {
 # Orchestrator does not support streaming (returns empty response)
 # or "tool" role messages (422 error), so guardrails LLMs are
 # non-streaming and agent nodes use regular agents with tools.
-_GUARDRAILS_LLM_COMMON = {**_LLM_COMMON, "streaming": False}
+
+def _log_guardrails_response(response: httpx.Response) -> None:
+    """httpx event hook — log detections/warnings from orchestrator responses."""
+    response.read()
+    try:
+        data = response.json()
+        if data.get("detections"):
+            print(f"[guardrails] Detections: {json.dumps(data['detections'], indent=2)}", flush=True)
+        if data.get("warnings"):
+            print(f"[guardrails] Warnings: {json.dumps(data['warnings'], indent=2)}", flush=True)
+    except Exception:
+        pass
+
+_guardrails_http_client = httpx.Client(event_hooks={"response": [_log_guardrails_response]})
+_GUARDRAILS_LLM_COMMON = {**_LLM_COMMON, "streaming": False, "http_client": _guardrails_http_client}
 
 if GUARDRAILS_URL:
     guardrails_llm = ChatOpenAI(
