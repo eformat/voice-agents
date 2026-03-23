@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from typing import Annotated, Literal
 
 from dotenv import load_dotenv
@@ -104,17 +105,47 @@ GUARDRAILS_DETECTORS_OUTPUT_SCREEN = {
 # or "tool" role messages (422 error), so guardrails LLMs are
 # non-streaming and agent nodes use regular agents with tools.
 
+_guardrails_tls = threading.local()
+
+
 def _log_guardrails_response(response: httpx.Response) -> None:
-    """httpx event hook — log detections/warnings from orchestrator responses."""
+    """httpx event hook — log and capture detections/warnings from orchestrator."""
     response.read()
     try:
         data = response.json()
-        if data.get("detections"):
-            print(f"[guardrails] Detections: {json.dumps(data['detections'], indent=2)}", flush=True)
-        if data.get("warnings"):
-            print(f"[guardrails] Warnings: {json.dumps(data['warnings'], indent=2)}", flush=True)
+        detections = data.get("detections")
+        warnings = data.get("warnings")
+        # Store for MLFlow tracing
+        _guardrails_tls.last_detections = detections
+        _guardrails_tls.last_warnings = warnings
+        if detections:
+            print(f"[guardrails] Detections: {json.dumps(detections, indent=2)}", flush=True)
+        if warnings:
+            print(f"[guardrails] Warnings: {json.dumps(warnings, indent=2)}", flush=True)
     except Exception:
         pass
+
+
+def _trace_guardrails(label: str) -> None:
+    """Log last guardrails detections/warnings to MLFlow active span."""
+    detections = getattr(_guardrails_tls, "last_detections", None)
+    warnings = getattr(_guardrails_tls, "last_warnings", None)
+    _guardrails_tls.last_detections = None
+    _guardrails_tls.last_warnings = None
+    if not detections and not warnings:
+        return
+    try:
+        import mlflow
+
+        span = mlflow.get_current_active_span()
+        if span:
+            if detections:
+                span.set_attribute(f"guardrails.{label}.detections", json.dumps(detections))
+            if warnings:
+                span.set_attribute(f"guardrails.{label}.warnings", json.dumps(warnings))
+    except Exception:
+        pass
+
 
 _guardrails_http_client = httpx.Client(event_hooks={"response": [_log_guardrails_response]})
 _GUARDRAILS_LLM_COMMON = {**_LLM_COMMON, "streaming": False, "http_client": _guardrails_http_client}
@@ -323,6 +354,7 @@ def _screen_user_input(messages: list) -> None:
         return
 
     guardrails_llm_input_only.invoke([HumanMessage(content=last_user_msg)])
+    _trace_guardrails("input_screen")
 
 
 def _screen_agent_output(response_text: str) -> None:
@@ -339,6 +371,7 @@ def _screen_agent_output(response_text: str) -> None:
         return
 
     guardrails_llm_output_screen.invoke([HumanMessage(content=response_text)])
+    _trace_guardrails("output_screen")
 
 
 def make_guardrails_nodes() -> dict:
@@ -349,6 +382,7 @@ def make_guardrails_nodes() -> dict:
         try:
             _screen_user_input(state["messages"])
         except Exception as exc:
+            _trace_guardrails("input_screen")
             print(f"[guardrails] User input blocked: {exc}", flush=True)
             return _guardrails_blocked_command()
 
@@ -363,8 +397,10 @@ def make_guardrails_nodes() -> dict:
                     g_supervisor_agent, SUPERVISOR_PROMPT, state["messages"], "supervisor"
                 )
             except Exception as exc:
+                _trace_guardrails("supervisor_response")
                 print(f"[guardrails] Supervisor response blocked: {exc}", flush=True)
                 return _guardrails_blocked_command()
+            _trace_guardrails("supervisor_response")
             return Command(goto="__end__", update={"messages": [response]})
 
         update = {
@@ -391,6 +427,7 @@ def make_guardrails_nodes() -> dict:
         try:
             _screen_agent_output(normalize_content_to_text(response.content))
         except Exception as exc:
+            _trace_guardrails("output_screen")
             print(f"[guardrails] Pizza agent output blocked: {exc}", flush=True)
             return _guardrails_blocked_command()
         return Command[str](goto="wait_for_user_after_pizza", update={"messages": [response]})
@@ -403,6 +440,7 @@ def make_guardrails_nodes() -> dict:
         try:
             _screen_agent_output(normalize_content_to_text(response.content))
         except Exception as exc:
+            _trace_guardrails("output_screen")
             print(f"[guardrails] Order agent output blocked: {exc}", flush=True)
             return _guardrails_blocked_command()
         return Command[str](goto="wait_for_user_after_order", update={"messages": [response]})
@@ -415,6 +453,7 @@ def make_guardrails_nodes() -> dict:
         try:
             _screen_agent_output(normalize_content_to_text(response.content))
         except Exception as exc:
+            _trace_guardrails("output_screen")
             print(f"[guardrails] Delivery agent output blocked: {exc}", flush=True)
             return _guardrails_blocked_command()
         return Command[str](goto="wait_for_user_after_delivery", update={"messages": [response]})
