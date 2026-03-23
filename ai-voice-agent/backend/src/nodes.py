@@ -81,6 +81,20 @@ GUARDRAILS_DETECTORS_INPUT_ONLY = {
     "output": {},
 }
 
+# Output screening for agent responses — uses input detectors on the
+# agent's response text (sent as a single user message). We scan the
+# text as "input" because the orchestrator scans the LLM's actual
+# response for output detectors, not pre-existing text we provide.
+# Gibberish detector excluded: agent responses with menu items, lists,
+# and order summaries frequently trigger false positives.
+GUARDRAILS_DETECTORS_OUTPUT_SCREEN = {
+    "input": {
+        "ibm-hate-and-profanity-detector": {},
+        "built-in-detector": {},
+    },
+    "output": {},
+}
+
 # ============================================================
 # Guardrails LLM instances (ChatOpenAI pointed at orchestrator)
 # ============================================================
@@ -98,6 +112,11 @@ if GUARDRAILS_URL:
     guardrails_llm_input_only = ChatOpenAI(
         base_url=GUARDRAILS_URL,
         extra_body={**_EXTRA_BODY, "detectors": GUARDRAILS_DETECTORS_INPUT_ONLY},
+        **_GUARDRAILS_LLM_COMMON,
+    )
+    guardrails_llm_output_screen = ChatOpenAI(
+        base_url=GUARDRAILS_URL,
+        extra_body={**_EXTRA_BODY, "detectors": GUARDRAILS_DETECTORS_OUTPUT_SCREEN},
         **_GUARDRAILS_LLM_COMMON,
     )
 
@@ -290,6 +309,22 @@ def _screen_user_input(messages: list) -> None:
     guardrails_llm_input_only.invoke([HumanMessage(content=last_user_msg)])
 
 
+def _screen_agent_output(response_text: str) -> None:
+    """Screen an agent's response through guardrails detectors.
+
+    Sends the agent's response as a single user message and scans it
+    through input detectors (HAP, built-in). We use input detectors
+    because the orchestrator's output detectors scan the LLM's live
+    response, not pre-existing text we provide. Gibberish detector is
+    excluded as agent responses with menu items and lists trigger
+    false positives.
+    """
+    if not response_text:
+        return
+
+    guardrails_llm_output_screen.invoke([HumanMessage(content=response_text)])
+
+
 def make_guardrails_nodes() -> dict:
     """Create node functions that route LLM calls through the guardrails orchestrator."""
 
@@ -337,6 +372,11 @@ def make_guardrails_nodes() -> dict:
         response = _invoke_agent(
             pizza_agent, PIZZA_AGENT_PROMPT, state["messages"], "pizza_agent"
         )
+        try:
+            _screen_agent_output(normalize_content_to_text(response.content))
+        except Exception as exc:
+            print(f"[guardrails] Pizza agent output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
         return Command[str](goto="wait_for_user_after_pizza", update={"messages": [response]})
 
     def g_order_agent_node(state: SupervisorState) -> Command:
@@ -344,6 +384,11 @@ def make_guardrails_nodes() -> dict:
         response = _invoke_agent(
             order_agent, ORDER_AGENT_PROMPT, state["messages"], "order_agent"
         )
+        try:
+            _screen_agent_output(normalize_content_to_text(response.content))
+        except Exception as exc:
+            print(f"[guardrails] Order agent output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
         return Command[str](goto="wait_for_user_after_order", update={"messages": [response]})
 
     def g_delivery_agent_node(state: SupervisorState) -> Command:
@@ -351,6 +396,11 @@ def make_guardrails_nodes() -> dict:
         response = _invoke_agent(
             delivery_agent, DELIVERY_AGENT_PROMPT, state["messages"], "delivery_agent"
         )
+        try:
+            _screen_agent_output(normalize_content_to_text(response.content))
+        except Exception as exc:
+            print(f"[guardrails] Delivery agent output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
         return Command[str](goto="wait_for_user_after_delivery", update={"messages": [response]})
 
     return {
