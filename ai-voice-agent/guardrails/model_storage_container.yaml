@@ -62,6 +62,7 @@ spec:
                 wajidlinux99/gibberish-text-detector
                 jackhhao/jailbreak-classifier
                 protectai/deberta-v3-base-prompt-injection-v2
+                oneonlee/llama-3.1-nemoguard-8b-content-safety-merged
               )
               echo "Starting download"
               for model in "${models[@]}"; do

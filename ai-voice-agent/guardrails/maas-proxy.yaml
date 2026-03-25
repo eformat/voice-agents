@@ -24,6 +24,8 @@ spec:
           protocol: TCP
         - containerPort: 8033
           protocol: TCP
+        - containerPort: 8085
+          protocol: TCP
         volumeMounts:
         - name: nginx-config
           mountPath: /etc/nginx/nginx.conf
@@ -58,4 +60,8 @@ spec:
     targetPort: 8033
     protocol: TCP
     name: orchestrator
+  - port: 8085
+    targetPort: 8085
+    protocol: TCP
+    name: content-safety
   type: ClusterIP

@@ -58,4 +58,19 @@ data:
           proxy_buffering off;
         }
       }
+      # HTTP proxy for content safety detector (NemoGuard via vLLM)
+      # Auth disabled on InferenceService, so plain HTTP on port 80.
+      server {
+        listen 8085;
+        location / {
+          set $nemoguard http://content-safety-detector-predictor.voice-agents.svc.cluster.local:8080;
+          proxy_pass $nemoguard;
+          proxy_http_version 1.1;
+          proxy_set_header Host content-safety-detector-predictor;
+          proxy_set_header Connection "";
+          proxy_read_timeout 120s;
+          proxy_connect_timeout 10s;
+          proxy_buffering off;
+        }
+      }
     }
