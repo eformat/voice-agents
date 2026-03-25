@@ -6,7 +6,9 @@ from langgraph.graph import START, StateGraph
 from src.nodes import (
     SupervisorState,
     delivery_agent_node,
+    make_both_guardrails_nodes,
     make_guardrails_nodes,
+    make_nemo_guardrails_nodes,
     order_agent_node,
     pizza_agent_node,
     supervisor_command_node,
@@ -17,12 +19,20 @@ from src.nodes import (
 )
 
 
-def build_graph(guardrails_enabled: bool = False):
+def build_graph(mode: str = "none"):
     """Compile and return the LangGraph instance (with checkpointer for interrupts)."""
     graph = StateGraph(SupervisorState)
 
-    if guardrails_enabled:
+    if mode == "fms":
         nodes = make_guardrails_nodes()
+    elif mode == "nemo":
+        nodes = make_nemo_guardrails_nodes()
+    elif mode == "both":
+        nodes = make_both_guardrails_nodes()
+    else:
+        nodes = None
+
+    if nodes:
         graph.add_node("supervisor", nodes["supervisor"])
         graph.add_node("order_agent", nodes["order_agent"])
         graph.add_node("pizza_agent", nodes["pizza_agent"])

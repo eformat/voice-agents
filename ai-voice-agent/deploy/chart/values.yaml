@@ -90,6 +90,10 @@ guardrails:
   # Only used when enabled=true.
   url: "http://guardrails-maas-proxy:8033/v1"
 
+nemoGuardrails:
+  enabled: false
+  url: "http://nemo-guardrails-internal:8000/v1"
+
 route:
   enabled: true
   host: ""

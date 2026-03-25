@@ -41,7 +41,7 @@ logging.getLogger("websockets").setLevel(logging.CRITICAL)
 
 from src.content_utils import normalize_content_to_text
 from src.graph import build_graph
-from src.nodes import GUARDRAILS_URL
+from src.nodes import GUARDRAILS_URL, NEMO_GUARDRAILS_URL
 from src.tools import (
     TTS_SAMPLE_RATE,
     convert_speech_to_text,
@@ -91,8 +91,10 @@ def _safe_messages(result: dict) -> list[dict[str, str]]:
     return msgs
 
 
-GRAPH = build_graph(guardrails_enabled=False)
-GRAPH_GUARDRAILS = build_graph(guardrails_enabled=True) if GUARDRAILS_URL else None
+GRAPH = build_graph(mode="none")
+GRAPH_FMS = build_graph(mode="fms") if GUARDRAILS_URL else None
+GRAPH_NEMO = build_graph(mode="nemo") if NEMO_GUARDRAILS_URL else None
+GRAPH_BOTH = build_graph(mode="both") if (GUARDRAILS_URL and NEMO_GUARDRAILS_URL) else None
 
 
 def _interrupt_values(result: dict) -> list[Any]:
@@ -131,12 +133,20 @@ def _select_tts_text(result: dict) -> str:
     return ""
 
 
-async def _invoke_graph(inputs: Any, config: dict, guardrails: bool = False) -> dict:
+_GRAPHS = {
+    "none": GRAPH,
+    "fms": GRAPH_FMS,
+    "nemo": GRAPH_NEMO,
+    "both": GRAPH_BOTH,
+}
+
+
+async def _invoke_graph(inputs: Any, config: dict, mode: str = "none") -> dict:
     """Invoke graph in a thread to avoid blocking the WS event loop."""
     callbacks = _mlflow_callbacks()
     if callbacks:
         config = {**config, "callbacks": callbacks}
-    graph = (GRAPH_GUARDRAILS if guardrails and GRAPH_GUARDRAILS else GRAPH)
+    graph = _GRAPHS.get(mode) or GRAPH
     return await asyncio.to_thread(graph.invoke, inputs, config)
 
 
@@ -192,10 +202,15 @@ async def _tts_stream(ws, text: str) -> None:
 
 async def handler(ws) -> None:
     awaiting_resume = False
-    guardrails_enabled = False
+    guardrails_mode = "none"
     config = {"configurable": {"thread_id": str(uuid.uuid4())}}
-    # Tell the client whether guardrails are available (GUARDRAILS_URL is set).
-    await ws.send(json.dumps({"type": "guardrails_available", "available": bool(GUARDRAILS_URL)}))
+    # Tell the client which guardrails backends are available.
+    await ws.send(json.dumps({
+        "type": "guardrails_available",
+        "available": bool(GUARDRAILS_URL),
+        "fms_guardrails_available": bool(GUARDRAILS_URL),
+        "nemo_guardrails_available": bool(NEMO_GUARDRAILS_URL),
+    }))
     while True:
         try:
             raw = await ws.recv()
@@ -217,7 +232,7 @@ async def handler(ws) -> None:
                     if awaiting_resume
                     else {"messages": [HumanMessage(content=text)]}
                 )
-                result = await _invoke_graph(inputs, config, guardrails=guardrails_enabled)
+                result = await _invoke_graph(inputs, config, mode=guardrails_mode)
                 interrupt_values = _interrupt_values(result)
                 awaiting_resume = bool(interrupt_values)
                 await ws.send(
@@ -256,7 +271,7 @@ async def handler(ws) -> None:
                         else {"messages": [HumanMessage(content=text)]}
                     )
                     result = await asyncio.wait_for(
-                        _invoke_graph(inputs, config, guardrails=guardrails_enabled), timeout=45
+                        _invoke_graph(inputs, config, mode=guardrails_mode), timeout=45
                     )
                 except asyncio.TimeoutError:
                     await ws.send(
@@ -311,8 +326,17 @@ async def handler(ws) -> None:
                     )
             elif msg_type == "set_guardrails":
                 guardrails_enabled = bool(data.get("enabled", False))
-                print(f"[ws] guardrails={'ON' if guardrails_enabled else 'OFF'}", flush=True)
+                guardrails_mode = "fms" if guardrails_enabled else "none"
+                print(f"[ws] guardrails mode={guardrails_mode}", flush=True)
                 await ws.send(json.dumps({"type": "guardrails_status", "enabled": guardrails_enabled}))
+            elif msg_type == "set_guardrails_mode":
+                requested_mode = data.get("mode", "none")
+                if requested_mode in ("none", "fms", "nemo", "both"):
+                    guardrails_mode = requested_mode
+                else:
+                    guardrails_mode = "none"
+                print(f"[ws] guardrails mode={guardrails_mode}", flush=True)
+                await ws.send(json.dumps({"type": "guardrails_mode", "mode": guardrails_mode}))
             else:
                 await ws.send(
                     json.dumps({"type": "error", "error": f"Unknown type: {msg_type}"})

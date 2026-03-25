@@ -14,8 +14,9 @@ type WsMsg =
       messages: { role: string; content: string }[];
       interrupt?: any;
     }
-  | { type: "guardrails_available"; available: boolean }
+  | { type: "guardrails_available"; available: boolean; fms_guardrails_available?: boolean; nemo_guardrails_available?: boolean }
   | { type: "guardrails_status"; enabled: boolean }
+  | { type: "guardrails_mode"; mode: string }
   | { type: "error"; error: string };
 
 function pcmToWavBlob(pcm: Int16Array, sampleRate: number): Blob {
@@ -146,6 +147,9 @@ export default function Home() {
   const [waiting, setWaiting] = useState(false);
   const [guardrailsAvailable, setGuardrailsAvailable] = useState(false);
   const [guardrailsEnabled, setGuardrailsEnabled] = useState(false);
+  const [fmsAvailable, setFmsAvailable] = useState(false);
+  const [nemoAvailable, setNemoAvailable] = useState(false);
+  const [guardrailsMode, setGuardrailsMode] = useState<string>("none");
 
   const wsRef = useRef<WebSocket | null>(null);
   const ttsReceivingBinaryRef = useRef<boolean>(false);
@@ -484,9 +488,14 @@ export default function Home() {
         }
         if (msg.type === "guardrails_available") {
           setGuardrailsAvailable(msg.available);
+          setFmsAvailable(msg.fms_guardrails_available ?? msg.available);
+          setNemoAvailable(msg.nemo_guardrails_available ?? false);
         }
         if (msg.type === "guardrails_status") {
           setGuardrailsEnabled(msg.enabled);
+        }
+        if (msg.type === "guardrails_mode") {
+          setGuardrailsMode(msg.mode);
         }
         if (msg.type === "error") setError(msg.error);
       } catch (e) {
@@ -610,6 +619,32 @@ export default function Home() {
     wsRef.current.send(JSON.stringify({ type: "set_guardrails", enabled: newState }));
   };
 
+  const fmsEnabled = guardrailsMode === "fms" || guardrailsMode === "both";
+  const nemoEnabled = guardrailsMode === "nemo" || guardrailsMode === "both";
+  const anyGuardrailsActive = guardrailsMode !== "none";
+
+  const sendGuardrailsMode = (mode: string) => {
+    if (!connected || !wsRef.current) return;
+    wsRef.current.send(JSON.stringify({ type: "set_guardrails_mode", mode }));
+    setGuardrailsMode(mode);
+  };
+
+  const toggleFms = () => {
+    const newFms = !fmsEnabled;
+    const newMode = newFms
+      ? (nemoEnabled ? "both" : "fms")
+      : (nemoEnabled ? "nemo" : "none");
+    sendGuardrailsMode(newMode);
+  };
+
+  const toggleNemo = () => {
+    const newNemo = !nemoEnabled;
+    const newMode = newNemo
+      ? (fmsEnabled ? "both" : "nemo")
+      : (fmsEnabled ? "fms" : "none");
+    sendGuardrailsMode(newMode);
+  };
+
   const sendText = () => {
     setError("");
     if (!connected || !wsRef.current) {
@@ -692,9 +727,9 @@ export default function Home() {
             <div className={`w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-rh-gray-50"}`} />
             <span className="text-rh-gray-40">{connected ? "Connected" : "Disconnected"}</span>
           </div>
-          {guardrailsAvailable && guardrailsEnabled && (
+          {anyGuardrailsActive && (
             <span className="text-[10px] px-2 py-0.5 rounded bg-rh-red/20 text-rh-red border border-rh-red/30 font-semibold uppercase tracking-wider">
-              Guardrails
+              {guardrailsMode === "both" ? "FMS+NeMo Guardrails" : guardrailsMode === "fms" ? "FMS Guardrails" : "NeMo Guardrails"}
             </span>
           )}
           <button
@@ -709,7 +744,7 @@ export default function Home() {
       {/* ─── Controls Panel (collapsible) ────────────────────────── */}
       {controlsOpen && (
         <div className="flex-none border-b border-rh-gray-80 bg-rh-gray-90 px-6 py-4 animate-fade-in-up">
-          <div className={`max-w-5xl mx-auto grid gap-4 ${guardrailsAvailable ? "md:grid-cols-4" : "md:grid-cols-3"}`}>
+          <div className={`max-w-5xl mx-auto grid gap-4 ${(fmsAvailable || nemoAvailable) ? "md:grid-cols-4" : "md:grid-cols-3"}`}>
             <div className="space-y-2">
               <label className="text-xs text-rh-gray-40 uppercase tracking-wider font-semibold">WebSocket URL</label>
               <input
@@ -787,32 +822,60 @@ export default function Home() {
                 </label>
               </div>
             </div>
-            {guardrailsAvailable && (
+            {(fmsAvailable || nemoAvailable) && (
             <div className="space-y-2">
               <label className="text-xs text-rh-gray-40 uppercase tracking-wider font-semibold">Guardrails</label>
+              {fmsAvailable && (
               <div className="flex items-center gap-3">
                 <button
                   className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-rh-red focus:ring-offset-2 focus:ring-offset-rh-gray-90 disabled:opacity-40 ${
-                    guardrailsEnabled ? "bg-rh-red" : "bg-rh-gray-70"
+                    fmsEnabled ? "bg-rh-red" : "bg-rh-gray-70"
                   }`}
-                  onClick={toggleGuardrails}
+                  onClick={toggleFms}
                   disabled={!connected}
                   role="switch"
-                  aria-checked={guardrailsEnabled}
+                  aria-checked={fmsEnabled}
                 >
                   <span
                     className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
-                      guardrailsEnabled ? "translate-x-6" : "translate-x-1"
+                      fmsEnabled ? "translate-x-6" : "translate-x-1"
                     }`}
                   />
                 </button>
-                <span className={`text-sm font-medium ${guardrailsEnabled ? "text-rh-red" : "text-rh-gray-40"}`}>
-                  {guardrailsEnabled ? "ON" : "OFF"}
+                <span className={`text-sm font-medium ${fmsEnabled ? "text-rh-red" : "text-rh-gray-40"}`}>
+                  FMS
                 </span>
               </div>
+              )}
+              {nemoAvailable && (
+              <div className="flex items-center gap-3">
+                <button
+                  className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-rh-red focus:ring-offset-2 focus:ring-offset-rh-gray-90 disabled:opacity-40 ${
+                    nemoEnabled ? "bg-rh-red" : "bg-rh-gray-70"
+                  }`}
+                  onClick={toggleNemo}
+                  disabled={!connected}
+                  role="switch"
+                  aria-checked={nemoEnabled}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                      nemoEnabled ? "translate-x-6" : "translate-x-1"
+                    }`}
+                  />
+                </button>
+                <span className={`text-sm font-medium ${nemoEnabled ? "text-rh-red" : "text-rh-gray-40"}`}>
+                  NeMo
+                </span>
+              </div>
+              )}
               <p className="text-[10px] text-rh-gray-50">
-                {guardrailsEnabled
-                  ? "All detectors active (jailbreak, profanity, gibberish)"
+                {guardrailsMode === "both"
+                  ? "FMS + NeMo active"
+                  : guardrailsMode === "fms"
+                  ? "FMS detectors active (jailbreak, profanity, gibberish)"
+                  : guardrailsMode === "nemo"
+                  ? "NeMo content safety active"
                   : "Direct LLM access (no content filtering)"}
               </p>
             </div>

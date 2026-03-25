@@ -36,6 +36,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "MODEL_NAME")
 BASE_URL = os.getenv("BASE_URL", "BASE_URL")
 API_KEY = os.getenv("API_KEY", "API_KEY")
 GUARDRAILS_URL = os.getenv("GUARDRAILS_URL", "")
+NEMO_GUARDRAILS_URL = os.getenv("NEMO_GUARDRAILS_URL", "")
 
 # ============================================================
 # Configuration
@@ -180,6 +181,45 @@ delivery_agent = create_react_agent(model=llm, tools=[choose_delivery])
 # react agent loop. User input is already pre-screened before routing.
 if GUARDRAILS_URL:
     g_supervisor_agent = create_react_agent(model=guardrails_llm, tools=[])
+
+# ============================================================
+# NeMo Guardrails LLM instance
+# ============================================================
+if NEMO_GUARDRAILS_URL:
+    nemo_llm = ChatOpenAI(
+        base_url=NEMO_GUARDRAILS_URL,
+        extra_body=_EXTRA_BODY,
+        **{**_LLM_COMMON, "streaming": False},
+    )
+    nemo_supervisor_agent = create_react_agent(model=nemo_llm, tools=[])
+
+_NEMO_BLOCKED_PATTERNS = [
+    "I'm sorry, I can't respond to that",
+    "I can't help with that type of request",
+]
+
+
+def _is_nemo_blocked(text: str) -> bool:
+    """Check if NeMo returned a canned blocked response."""
+    return any(p in text for p in _NEMO_BLOCKED_PATTERNS)
+
+
+def _screen_nemo_input(user_text: str) -> None:
+    """Screen user input through NeMo guardrails. Raises if blocked."""
+    result = nemo_llm.invoke([HumanMessage(content=user_text)])
+    response_text = normalize_content_to_text(result.content)
+    if _is_nemo_blocked(response_text):
+        raise ValueError(f"[nemo] Input blocked: {response_text}")
+
+
+def _screen_nemo_output(agent_text: str) -> None:
+    """Screen agent output through NeMo guardrails. Raises if blocked."""
+    if not agent_text:
+        return
+    result = nemo_llm.invoke([HumanMessage(content=agent_text)])
+    response_text = normalize_content_to_text(result.content)
+    if _is_nemo_blocked(response_text):
+        raise ValueError(f"[nemo] Output blocked: {response_text}")
 
 
 # ============================================================
@@ -463,4 +503,198 @@ def make_guardrails_nodes() -> dict:
         "order_agent": g_order_agent_node,
         "pizza_agent": g_pizza_agent_node,
         "delivery_agent": g_delivery_agent_node,
+    }
+
+
+def make_nemo_guardrails_nodes() -> dict:
+    """Create node functions that route through NeMo guardrails."""
+
+    def n_supervisor_command_node(state: SupervisorState) -> Command:
+        # Pre-screen user input through NeMo.
+        last_user_msg = None
+        for m in reversed(state["messages"]):
+            if isinstance(m, HumanMessage):
+                last_user_msg = m.content
+                break
+        if last_user_msg:
+            try:
+                _screen_nemo_input(last_user_msg)
+            except Exception as exc:
+                print(f"[nemo] User input blocked: {exc}", flush=True)
+                return _guardrails_blocked_command()
+
+        # Routing uses regular LLM.
+        decision: SupervisorDecision = llm.with_structured_output(
+            SupervisorDecision
+        ).invoke([SystemMessage(content=SUPERVISOR_PROMPT)] + state["messages"])
+
+        if decision.next_agent == "none":
+            response = _invoke_agent(
+                nemo_supervisor_agent, SUPERVISOR_PROMPT, state["messages"], "supervisor"
+            )
+            response_text = normalize_content_to_text(response.content)
+            if _is_nemo_blocked(response_text):
+                print("[nemo] Supervisor response blocked", flush=True)
+                return _guardrails_blocked_command()
+            return Command(goto="__end__", update={"messages": [response]})
+
+        update = {
+            "messages": [
+                AIMessage(content=f"Routing to {decision.next_agent}", name="supervisor")
+            ]
+        }
+        if decision.pizza_type != "":
+            update["pizza_type"] = decision.pizza_type
+            print(f"Supervisor [nemo]: Extracted pizza_type='{decision.pizza_type}'")
+        print(f"Supervisor [nemo]: Routing to {decision.next_agent}")
+        return Command[str](goto=decision.next_agent, update=update)
+
+    def n_pizza_agent_node(state: SupervisorState) -> Command:
+        print("Pizza Agent [nemo]")
+        response = _invoke_agent(pizza_agent, PIZZA_AGENT_PROMPT, state["messages"], "pizza_agent")
+        try:
+            _screen_nemo_output(normalize_content_to_text(response.content))
+        except Exception as exc:
+            print(f"[nemo] Pizza agent output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
+        return Command[str](goto="wait_for_user_after_pizza", update={"messages": [response]})
+
+    def n_order_agent_node(state: SupervisorState) -> Command:
+        print("Order Agent [nemo]")
+        response = _invoke_agent(order_agent, ORDER_AGENT_PROMPT, state["messages"], "order_agent")
+        try:
+            _screen_nemo_output(normalize_content_to_text(response.content))
+        except Exception as exc:
+            print(f"[nemo] Order agent output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
+        return Command[str](goto="wait_for_user_after_order", update={"messages": [response]})
+
+    def n_delivery_agent_node(state: SupervisorState) -> Command:
+        print("Delivery Agent [nemo]")
+        response = _invoke_agent(delivery_agent, DELIVERY_AGENT_PROMPT, state["messages"], "delivery_agent")
+        try:
+            _screen_nemo_output(normalize_content_to_text(response.content))
+        except Exception as exc:
+            print(f"[nemo] Delivery agent output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
+        return Command[str](goto="wait_for_user_after_delivery", update={"messages": [response]})
+
+    return {
+        "supervisor": n_supervisor_command_node,
+        "order_agent": n_order_agent_node,
+        "pizza_agent": n_pizza_agent_node,
+        "delivery_agent": n_delivery_agent_node,
+    }
+
+
+def make_both_guardrails_nodes() -> dict:
+    """Create node functions that layer both FMS and NeMo guardrails."""
+
+    def b_supervisor_command_node(state: SupervisorState) -> Command:
+        # FMS input screening.
+        try:
+            _screen_user_input(state["messages"])
+        except Exception as exc:
+            _trace_guardrails("input_screen")
+            print(f"[guardrails/both] FMS input blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
+
+        # NeMo input screening.
+        last_user_msg = None
+        for m in reversed(state["messages"]):
+            if isinstance(m, HumanMessage):
+                last_user_msg = m.content
+                break
+        if last_user_msg:
+            try:
+                _screen_nemo_input(last_user_msg)
+            except Exception as exc:
+                print(f"[guardrails/both] NeMo input blocked: {exc}", flush=True)
+                return _guardrails_blocked_command()
+
+        # Routing uses regular LLM.
+        decision: SupervisorDecision = llm.with_structured_output(
+            SupervisorDecision
+        ).invoke([SystemMessage(content=SUPERVISOR_PROMPT)] + state["messages"])
+
+        if decision.next_agent == "none":
+            # Route through FMS guardrails LLM for direct response.
+            try:
+                response = _invoke_agent(
+                    g_supervisor_agent, SUPERVISOR_PROMPT, state["messages"], "supervisor"
+                )
+            except Exception as exc:
+                _trace_guardrails("supervisor_response")
+                print(f"[guardrails/both] FMS supervisor response blocked: {exc}", flush=True)
+                return _guardrails_blocked_command()
+            _trace_guardrails("supervisor_response")
+            return Command(goto="__end__", update={"messages": [response]})
+
+        update = {
+            "messages": [
+                AIMessage(content=f"Routing to {decision.next_agent}", name="supervisor")
+            ]
+        }
+        if decision.pizza_type != "":
+            update["pizza_type"] = decision.pizza_type
+            print(f"Supervisor [both]: Extracted pizza_type='{decision.pizza_type}'")
+        print(f"Supervisor [both]: Routing to {decision.next_agent}")
+        return Command[str](goto=decision.next_agent, update=update)
+
+    def b_pizza_agent_node(state: SupervisorState) -> Command:
+        print("Pizza Agent [both]")
+        response = _invoke_agent(pizza_agent, PIZZA_AGENT_PROMPT, state["messages"], "pizza_agent")
+        response_text = normalize_content_to_text(response.content)
+        try:
+            _screen_agent_output(response_text)
+        except Exception as exc:
+            _trace_guardrails("output_screen")
+            print(f"[guardrails/both] FMS pizza output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
+        try:
+            _screen_nemo_output(response_text)
+        except Exception as exc:
+            print(f"[guardrails/both] NeMo pizza output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
+        return Command[str](goto="wait_for_user_after_pizza", update={"messages": [response]})
+
+    def b_order_agent_node(state: SupervisorState) -> Command:
+        print("Order Agent [both]")
+        response = _invoke_agent(order_agent, ORDER_AGENT_PROMPT, state["messages"], "order_agent")
+        response_text = normalize_content_to_text(response.content)
+        try:
+            _screen_agent_output(response_text)
+        except Exception as exc:
+            _trace_guardrails("output_screen")
+            print(f"[guardrails/both] FMS order output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
+        try:
+            _screen_nemo_output(response_text)
+        except Exception as exc:
+            print(f"[guardrails/both] NeMo order output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
+        return Command[str](goto="wait_for_user_after_order", update={"messages": [response]})
+
+    def b_delivery_agent_node(state: SupervisorState) -> Command:
+        print("Delivery Agent [both]")
+        response = _invoke_agent(delivery_agent, DELIVERY_AGENT_PROMPT, state["messages"], "delivery_agent")
+        response_text = normalize_content_to_text(response.content)
+        try:
+            _screen_agent_output(response_text)
+        except Exception as exc:
+            _trace_guardrails("output_screen")
+            print(f"[guardrails/both] FMS delivery output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
+        try:
+            _screen_nemo_output(response_text)
+        except Exception as exc:
+            print(f"[guardrails/both] NeMo delivery output blocked: {exc}", flush=True)
+            return _guardrails_blocked_command()
+        return Command[str](goto="wait_for_user_after_delivery", update={"messages": [response]})
+
+    return {
+        "supervisor": b_supervisor_command_node,
+        "order_agent": b_order_agent_node,
+        "pizza_agent": b_pizza_agent_node,
+        "delivery_agent": b_delivery_agent_node,
     }

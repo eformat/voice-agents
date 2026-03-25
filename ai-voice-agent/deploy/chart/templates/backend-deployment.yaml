@@ -36,6 +36,10 @@ spec:
             - name: GUARDRAILS_URL
               value: {{ .Values.guardrails.url | quote }}
             {{- end }}
+            {{- if .Values.nemoGuardrails.enabled }}
+            - name: NEMO_GUARDRAILS_URL
+              value: {{ .Values.nemoGuardrails.url | quote }}
+            {{- end }}
             - name: API_KEY
               valueFrom:
                 secretKeyRef:
