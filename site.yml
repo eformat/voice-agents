@@ -14,6 +14,25 @@ ui:
     snapshot: true
   supplemental_files:
     - path: ./content/supplemental-ui
+    - path: partials/footer-scripts.hbs
+      contents: |
+        <script defer src="{{uiRootPath}}/js/vendor/clipboard.js"></script>
+        <script defer src="{{uiRootPath}}/js/site.js"></script>
+        <script defer src="{{uiRootPath}}/js/vendor/highlight.js"></script>
+        <script>
+        (function () {
+          document.addEventListener('click', function (e) {
+            var btn = e.target.closest('.copy-button, [data-clipboard-snippet]');
+            if (!btn) return;
+            var code = btn.nextElementSibling;
+            if (!code) return;
+            var text = code.textContent.trim();
+            if (text && window.parent !== window) {
+              window.parent.postMessage({ type: 'copy', text: text }, '*');
+            }
+          });
+        })();
+        </script>
 
 output:
   dir: ./www
