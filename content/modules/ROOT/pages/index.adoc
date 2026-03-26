@@ -54,7 +54,7 @@ https://console-openshift-console.apps.<CLUSTER_DOMAIN>>[Console URL - https://c
 
 or if you prefer via the CLI
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 oc login --server=https://api.<CLUSTER_DOMAIN>:6443 -u admin -p password
 ----

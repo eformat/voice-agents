@@ -33,23 +33,3 @@ video {
     width: 100%;
     background-color: #131313;
 }
-
-/* Copy to terminal button on code blocks */
-.copy-to-terminal-btn {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    background: #333;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    padding: 4px 8px;
-    cursor: pointer;
-    font-size: 16px;
-    opacity: 0.6;
-    z-index: 1;
-}
-.copy-to-terminal-btn:hover {
-    opacity: 1;
-    background: #c00;
-}
