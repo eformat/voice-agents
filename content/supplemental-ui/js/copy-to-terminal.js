@@ -16,8 +16,24 @@
       if (!code) return;
 
       var text = code.textContent.trim();
-      if (text && window.parent !== window) {
-        window.parent.postMessage({ type: 'copy', text: text }, '*');
+      if (!text) return;
+      // Copy to clipboard with fallback for unfocused nested iframes
+      if (navigator.clipboard && document.hasFocus()) {
+        navigator.clipboard.writeText(text).catch(function () {});
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      // Post to top-level frame for terminal auto-paste
+      if (window.top !== window) {
+        window.top.postMessage({ type: 'copy', text: text }, '*');
       }
     });
   });
