@@ -1,5 +1,0 @@
-= Llama Stack
-:source-highlighter: rouge
-icons: font
-
-Using LlamaStack.

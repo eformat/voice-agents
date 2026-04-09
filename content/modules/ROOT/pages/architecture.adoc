@@ -3,4 +3,129 @@
 :icons: font
 :imagesdir: ../images
 
-Discover the basic architecture for our voice agent application.
+Discover how the voice agent application is built — the voice sandwich pattern, model stack, data flow, and performance considerations.
+
+== The Voice Sandwich
+
+The "voice sandwich" pattern wraps an LLM agent between speech-to-text (STT) and text-to-speech (TTS) layers:
+
+image::voice-sandwich.png[Voice Sandwich]
+
+image::voice-sandwich-components.png[Voice Sandwich Components]
+
+=== Current Stack
+
+* Python WebSocket server
+* Next.js client
+* LangChain agents SDK (LangGraph)
+* MLflow / Llama Stack for observability (optional)
+* WebSockets for client-server communication
+* RHOAI 3.x Platform on AWS
+
+=== Simplifications
+
+* No VAD — manual start/stop recording via a button
+* WebSockets instead of WebRTC (simpler, sufficient for demo)
+
+=== References
+
+* https://www.youtube.com/watch?v=kDPzdyX76cg[Build a voice agent with LangChain - YouTube^]
+* https://github.com/langchain-ai/voice-sandwich-demo[Voice Sandwich Demo Repository^]
+
+== Model Selection
+
+[cols="1,1,2,2",options="header"]
+|===
+| Model Name | License | Description | Notes
+
+| Whisper
+| link:https://www.apache.org/licenses/LICENSE-2.0[apache-2.0^]
+| Speech to Text
+| Quantized version of openai/whisper-large-v3-turbo link:https://huggingface.co/RedHatAI/whisper-large-v3-turbo-quantized.w4a16[whisper-large-v3-turbo-quantized.w4a16^]
+
+| Higgs-Audio
+| link:https://huggingface.co/bosonai/higgs-audio-v2-generation-3B-base/blob/main/LICENSE[Higgs Audio 2 (Meta 3) Community^]
+| Text to Speech
+| Audio foundation model link:https://github.com/boson-ai/higgs-audio[github^] link:https://huggingface.co/bosonai/higgs-audio-v2-generation-3B-base[higgs-audio-v2-generation-3B-base^]
+
+| Llama4 Scout
+| link:https://www.llama.com/llama4/license/[LLama 4 Community^]
+| Agent Model
+| link:https://huggingface.co/RedHatAI/Llama-4-Scout-17B-16E-Instruct-quantized.w4a16[Llama-4-Scout-17B-16E-Instruct-quantized.w4a16^]
+|===
+
+== Voice Flow
+
+image::voice-flow-diagram.png[Voice Flow Diagram]
+
+The user records audio in the browser, the UI sends the WAV to the Python WebSocket server, the server runs STT + the agent graph, then streams TTS audio back to the browser for playback.
+
+[source,mermaid]
+----
+sequenceDiagram
+  autonumber
+  actor User
+  participant UI as Next.js UI (web/src/app/page.tsx)
+  participant WS as WS Server (ws_server.py)
+  participant STT as STT Endpoint
+  participant Graph as LangGraph + Agents
+  participant TTS as TTS Stream (OpenAI-compatible)
+
+  User->>UI: Start Recording
+  UI->>UI: getUserMedia() + ScriptProcessor capture
+  User->>UI: Stop & Send
+  UI->>UI: Build WAV (pcmToWavBlob)
+  UI->>WS: JSON {type:"audio_wav_b64", audio_b64:...}
+
+  WS->>STT: convert_speech_to_text(audio_bytes)
+  STT-->>WS: transcript text
+  WS-->>UI: JSON {type:"transcript", text}
+
+  WS->>Graph: GRAPH.invoke(messages + transcript)
+  Graph-->>WS: graph_result (messages, pizza_type, interrupt)
+  WS-->>UI: JSON {type:"graph_result", ...}
+
+  WS->>TTS: stream_tts_pcm_chunks(text)
+  WS-->>UI: JSON {type:"tts_begin", format:"pcm_s16le", sample_rate}
+  WS-->>UI: binary PCM frames (ArrayBuffer)
+  WS-->>UI: JSON {type:"tts_end"}
+
+  UI->>UI: AudioWorklet + SharedArrayBuffer playback
+----
+
+== Infrastructure Performance
+
+Prevent buffering and choppy sound when generating speech.
+
+=== GPU Card
+
+Measure Text to Speech generation speed early:
+
+[source,bash]
+----
+(gen x) = (audio seconds produced) / (wall clock seconds elapsed)
+----
+
+* If `gen x < 1.0` for significant periods, the TTS stream is arriving *slower than realtime* — you will get underruns/chops unless you add more buffering (delay) or pause/rebuffer.
+* If `gen x >= 1.0` consistently, then underruns are coming from client-side issues.
+
+[cols="1,1,1,1",options="header"]
+|===
+| Card Details | Cores | AMI Instance Type | Gen-X
+
+| NVIDIA L4 - 24 GB
+| 7,424 CUDA Cores, 240 Tensor Cores (Gen 4), 60 RT Cores (Gen 3)
+| g6-8xlarge
+| 0.78
+
+| NVIDIA L40S - 48 GB
+| 18,176 CUDA Cores, 568 Tensor Cores (Gen 4), 142 RT Cores (Gen 3)
+| g6e-xlarge
+| 1.95
+|===
+
+image::gen-x.png[Gen-X Performance Chart]
+
+=== Client Architecture
+
+Javascript client architecture using link:https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer[SharedArrayBuffer^] ring — shared-memory ring buffer (SharedArrayBuffer + Atomics) between main thread and worklet to eliminate per-chunk messaging entirely.

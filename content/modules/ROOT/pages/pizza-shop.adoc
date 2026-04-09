@@ -1,0 +1,165 @@
+= Pizza Shop Demo
+:source-highlighter: rouge
+:toc: macro
+:toclevels: 2
+:imagesdir: ../images
+
+Putting it all together — the agent architecture, prompt engineering, handoff flow, and running the demo.
+
+video::X-BNR-7Umiw[youtube]
+
+== Agent Graph
+
+The pizza agent graph shows how different agents collaborate:
+
+image::agent-graph.png[Agent Graph]
+
+=== Creating Agents
+
+Agents are created with specific roles and responsibilities:
+
+image::agent-creation.png[Agent Creation]
+
+Each agent has:
+
+* A defined role (supervisor, pizza type selector, order calculator, delivery handler)
+* Specific system prompts
+* Access to tools and functions
+* Connection to the LLM
+
+=== Supervisor Model Configuration
+
+The supervisor agent coordinates all other agents:
+
+image::supervisor-model-configuration.png[Supervisor Model Configuration]
+
+=== Invoking Agents
+
+Agents are invoked through the LangGraph framework:
+
+image::invoking-agents.png[Invoking Agents]
+
+=== Conversation State
+
+The system maintains conversation state across interactions:
+
+image::conversation-state.png[Conversation State]
+
+State includes: current pizza type, order details, delivery information, conversation history, and interrupt flags.
+
+== Agent Prompts
+
+=== Supervisor
+
+The supervisor manages the flow between agents:
+
+image::supervisor-agent-prompt.png[Supervisor Agent Prompt]
+
+=== Pizza Type
+
+Handles pizza selection:
+
+image::pizza-agent-prompt.png[Pizza Agent Prompt]
+
+=== Order Total
+
+Calculates order costs:
+
+image::order-agent-prompt.png[Order Agent Prompt]
+
+=== Delivery
+
+Manages delivery details:
+
+image::delivery-agent-prompt.png[Delivery Agent Prompt]
+
+== Agent Interrupts
+
+The system handles interruptions gracefully:
+
+image::agent-interrupt.png[Agent Interrupt]
+
+Interrupts allow canceling operations, switching agents, handling user corrections, and managing error states.
+
+== LangGraph and Agent Handoffs
+
+=== Supervisor Routing
+
+The supervisor routes requests to the appropriate specialist agent:
+
+image::supervisor-routing.png[Supervisor Routing]
+
+Routing decisions are based on user intent, current conversation state, and agent capabilities.
+
+=== Wait for User Speech
+
+The system pauses to wait for user input:
+
+image::wait-for-user-speech.png[Wait for User Speech]
+
+=== Handoff Flow
+
+1. User speaks -> Speech converted to text (STT)
+2. Supervisor receives text and analyzes intent
+3. Supervisor routes to appropriate agent
+4. Agent processes request and generates response
+5. Response converted to speech (TTS)
+6. System waits for next user input
+
+== Running the Demo
+
+=== Server Side
+
+In your voice notebook, install requirements and run the WebSocket server:
+
+[source,bash]
+----
+uv pip install -r requirement.txt
+----
+
+[source,bash]
+----
+python ws_server.py
+----
+
+image:server-side.png[Server Side]
+
+=== Client Side
+
+[source,bash]
+----
+cd web
+npm i
+npm run build
+npx next dev -H 0.0.0.0 -p 3000
+----
+
+image:client-side.png[Client Side]
+
+Apply client side routing:
+
+[source,bash]
+----
+oc apply -f web-ui-routing.yaml
+----
+
+Browse to the Web UI Route.
+
+=== Testing
+
+Connect to the web socket using the notebook proxy:
+
+[source,bash]
+----
+wss://data-science-gateway.apps.<CLUSTER_DOMAIN>/notebook/agent-demo/voice/proxy/8765/admin
+----
+
+image:connect-web-socket.png[Connect Web Socket]
+
+Quick test (no mic needed):
+
+image:quick-test-no-mic.png[Quick Test No Mic]
+
+Start a conversation:
+
+image:use-your-voice.png[Use Your Voice]

@@ -50,7 +50,7 @@ image::top-nav-bar.png[Top Navigation Bar]
 
 Your cluster should be available from the Console URL
 
-https://console-openshift-console.apps.<CLUSTER_DOMAIN>>[Console URL - https://console-openshift-console.apps.<CLUSTER_DOMAIN>^]
+https://console-openshift-console.apps.<CLUSTER_DOMAIN>[Console URL - https://console-openshift-console.apps.<CLUSTER_DOMAIN>^]
 
 or if you prefer via the CLI
 

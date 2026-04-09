@@ -1,0 +1,69 @@
+= Speech Models
+:source-highlighter: rouge
+:toc: macro
+:toclevels: 2
+
+Deploy and test the Speech to Text (Whisper) and Text to Speech (Higgs-Audio) models using RHOAI.
+
+== Speech to Text — Whisper
+
+=== Deploy
+
+[source,bash]
+----
+oc apply -f models/whisper/whisper-llmisvc.yaml
+----
+
+=== Test
+
+[source,bash]
+----
+curl -s -X POST ${MODEL_URL}/v1/audio/transcriptions \
+  -H "Content-Type: multipart/form-data" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  --form file=@/home/mike/Downloads/hello.wav \
+  --form model=whisper | jq .
+----
+
+Expected response:
+
+[source,json]
+----
+{
+  "text": " Hello.",
+  "usage": {
+    "type": "duration",
+    "seconds": 3
+  }
+}
+----
+
+The Whisper model converts speech audio into text — the first step in the voice agent pipeline.
+
+== Text to Speech — Higgs-Audio
+
+=== Deploy
+
+[source,bash]
+----
+oc apply -f models/higgs-audio/higgs-audio-v2-deployment.yaml
+----
+
+=== Test
+
+[source,bash]
+----
+curl -X POST $MODEL_URL/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "higgs-audio-v2-generation-3B-base",
+    "voice": "belinda",
+    "input": "What would you like on your pizza?",
+    "response_format": "pcm"
+  }' \
+  --output - | ffmpeg -f s16le -ar 24000 -ac 1 -i pipe:0 -f wav - | ffplay -nodisp -autoexit -
+----
+
+This sends a text prompt to the TTS model, receives PCM audio, converts to WAV with ffmpeg, and plays it with ffplay.
+
+The Higgs-Audio model generates natural-sounding speech from text, completing the voice agent loop.

@@ -1,6 +1,0 @@
-= Working with Voice
-:source-highlighter: rouge
-:icons: font
-:imagesdir: ../images
-
-Discover how to build voice-enabled AI applications using OpenShift AI.

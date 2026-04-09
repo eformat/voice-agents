@@ -38,7 +38,7 @@ image:create-project.png[Create Project]
 
 == Import a workbench image
 
-. We need to import a workbench image that supports voice libraries. Click on *Settings** > **Environment Setup** > **Workbench Images** - **Import new image**
+. We need to import a workbench image that supports voice libraries. Click on **Settings** > **Environment Setup** > **Workbench Images** - **Import new image**
 +
 image:import-voice-workbench-image-1.png[Import Image 1]
 
