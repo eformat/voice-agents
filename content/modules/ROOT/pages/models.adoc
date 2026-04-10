@@ -57,6 +57,7 @@ Run all cells (**Run > Run All Cells**). The notebook will:
 3. Generate a test WAV and transcribe it with Whisper
 4. Deploy Higgs-Audio and verify it is ready
 5. Send text to the TTS endpoint and play the audio inline
+6. Measure TTS generation speed (gen x)
 
 ++++
 <div class="imageblock" id="models-notebook">
@@ -187,3 +188,38 @@ curl -X POST http://higgs-audio-predictor:8080/v1/audio/speech \
 ----
 
 This sends text to the TTS model, receives PCM audio (signed 16-bit, 24kHz, mono), converts to WAV with ffmpeg, and plays it with ffplay.
+
+=== Measure TTS Generation Speed (gen x)
+
+For a real-time voice agent, TTS must generate audio faster than real-time — otherwise the user hears silence while waiting. We measure this as *gen x*:
+
+----
+gen x = audio seconds produced / wall clock seconds elapsed
+----
+
+A gen x of *1.0* means real-time. Above 1.0 means the model generates faster than playback — the higher the better. Below 1.0 and the user will experience latency gaps.
+
+Send a few prompts and measure the generation speed:
+
+[source,bash]
+----
+for prompt in \
+  "What would you like on your pizza?" \
+  "Your order has been placed and will be ready in about twenty minutes." \
+  "We have pepperoni, mushrooms, olives, onions, and extra cheese available as toppings."
+do
+  START=$(date +%s%N)
+  curl -s -X POST http://higgs-audio-predictor:8080/v1/audio/speech \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"higgs-audio-v2-generation-3B-base\",\"voice\":\"belinda\",\"input\":\"${prompt}\",\"response_format\":\"pcm\"}" \
+    --output /tmp/tts-bench.pcm
+  END=$(date +%s%N)
+
+  WALL_MS=$(( (END - START) / 1000000 ))
+  PCM_BYTES=$(stat -c%s /tmp/tts-bench.pcm)
+  AUDIO_MS=$(( PCM_BYTES * 1000 / (24000 * 2) ))
+  echo "${prompt}: audio=${AUDIO_MS}ms wall=${WALL_MS}ms gen_x=$(echo "scale=1; ${AUDIO_MS}.0 / ${WALL_MS}.0" | bc)x"
+done
+----
+
+On a MIG 2g.35gb slice, expect gen x values around *2–3x* real-time once the model is warm (the first request may be slower due to model warm-up).
