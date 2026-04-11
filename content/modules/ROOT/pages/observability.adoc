@@ -12,14 +12,14 @@ MLflow is used for experiment tracking and observability.
 
 The voice agent Helm chart includes MLflow as an optional component, enabled by default.
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 helm install voice-agent ai-voice-agent/deploy/chart/
 ----
 
 To disable MLflow:
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 helm install voice-agent ai-voice-agent/deploy/chart/ --set mlflow.enabled=false
 ----
@@ -60,7 +60,7 @@ mlflow:
 
 To disable the OAuth proxy and expose MLflow directly:
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 helm install voice-agent ai-voice-agent/deploy/chart/ --set mlflow.oauth.enabled=false
 ----

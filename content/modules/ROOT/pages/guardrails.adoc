@@ -87,14 +87,14 @@ The old `jailbreak-detector` (`jackhhao/jailbreak-classifier`, BERT-base, 1,300 
 
 === Deploy guardrails resources
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 oc apply -k ai-voice-agent/guardrails/ -n voice-agents
 ----
 
 After the operator creates the orchestrator deployment, apply the prometheus fix for the detectors container:
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 oc apply -f ai-voice-agent/guardrails/patches/orchestrator-prometheus-fix.yaml -n voice-agents
 ----
@@ -112,7 +112,7 @@ guardrails:
 
 Then redeploy the Helm chart:
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 helm upgrade voice-agent ai-voice-agent/deploy/chart/
 ----
@@ -121,14 +121,14 @@ When enabled, the backend sets `GUARDRAILS_URL` and the frontend displays the gu
 
 === Verify pods are running
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 oc get pods -n voice-agents -l 'app in (guardrails-orchestrator, guardrails-maas-proxy, chunker-service)'
 ----
 
 Check that the detector inference services are ready:
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 oc get inferenceservices -n voice-agents
 ----
@@ -137,14 +137,14 @@ oc get inferenceservices -n voice-agents
 
 Port-forward to the nginx proxy:
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 oc port-forward svc/guardrails-maas-proxy 8033:8033 -n voice-agents
 ----
 
 === Prompt injection test (should be blocked)
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 export API_KEY=<your-maas-jwt-token>
 
@@ -195,7 +195,7 @@ Expected response — `choices` is empty, prompt injection detected:
 
 === Normal message (should pass through)
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 curl -s http://localhost:8033/v1/chat/completions \
   -H "Content-Type: application/json" \

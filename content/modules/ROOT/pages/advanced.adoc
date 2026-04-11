@@ -6,7 +6,7 @@ icons: font
 
 i wanna be like *mike*
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 curl -X POST $MODEL_URL/v1/audio/speech \
   -H "Content-Type: application/json" \

@@ -68,7 +68,7 @@ Prevent buffering and choppy sound when generating speech.
 
 Measure Text to Speech generation speed early:
 
-[source,bash]
+[.copypaste,source,bash]
 ----
 (gen x) = (audio seconds produced) / (wall clock seconds elapsed)
 ----
