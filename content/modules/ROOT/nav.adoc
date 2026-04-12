@@ -1,8 +1,15 @@
-* xref:index.adoc[Voice Lab]
+* xref:index.adoc[Welcome]
+
+.Workshop
 * xref:getting-connected.adoc[Get Connected]
+
+.Modules
 * xref:architecture.adoc[Architecture]
 * xref:models.adoc[Speech Models]
 * xref:pizza-shop.adoc[Pizza Shop Demo]
 * xref:observability.adoc[Observability]
 * xref:guardrails.adoc[Guardrails]
+
+.Wrap-up
+* xref:conclusion.adoc[Conclusion]
 * xref:advanced.adoc[Advanced]
