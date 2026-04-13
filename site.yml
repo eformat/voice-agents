@@ -12,63 +12,7 @@ ui:
   bundle:
     url: https://github.com/rhpds/rhdp_showroom_theme/releases/download/patternfly-6/ui-bundle.zip
     snapshot: true
-  supplemental_files:
-    - path: ./content/supplemental-ui
-    - path: partials/footer-scripts.hbs
-      contents: |
-        <style>
-        #lightbox {
-          position: fixed; z-index: 999;
-          top: 0; left: 0;
-          width: 100vw; height: 100vh;
-          background: rgba(0, 0, 0, 0.5);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          visibility: hidden;
-          opacity: 0;
-          transition: opacity ease 0.4s;
-        }
-        #lightbox.show { visibility: visible; opacity: 1; }
-        #lightbox img { width: 100%; height: auto; object-fit: cover; }
-        img.zoom { cursor: zoom-in; }
-        </style>
-        <script defer src="{{uiRootPath}}/js/vendor/clipboard.js"></script>
-        <script defer src="{{uiRootPath}}/js/site.js"></script>
-        <script defer src="{{uiRootPath}}/js/vendor/highlight.js"></script>
-        <script>
-        (function () {
-          document.addEventListener('click', function (e) {
-            var btn = e.target.closest('.copy-button, [data-clipboard-snippet]');
-            if (!btn) return;
-            var code = btn.nextElementSibling;
-            if (!code) return;
-            var text = code.textContent.trim();
-            if (text && window.parent !== window) {
-              window.parent.postMessage({ type: 'copy', text: text }, '*');
-            }
-          });
-        })();
-        </script>
-        <script>
-        document.addEventListener("DOMContentLoaded", function () {
-          var all = document.getElementsByClassName("zoom"),
-              lightbox = document.getElementById("lightbox");
-          if (!lightbox) return;
-          if (all.length > 0) { for (var i = 0; i < all.length; i++) {
-            all[i].onclick = function () {
-              var clone = this.cloneNode();
-              clone.className = "";
-              lightbox.innerHTML = "";
-              lightbox.appendChild(clone);
-              lightbox.className = "show";
-            };
-          }}
-          lightbox.onclick = function () {
-            lightbox.className = "";
-          };
-        });
-        </script>
+  supplemental_files: ./content/supplemental-ui
 
 output:
   dir: ./www
