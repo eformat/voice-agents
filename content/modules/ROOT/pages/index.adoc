@@ -8,6 +8,10 @@
 
 Welcome to the Voice Agents workshop!
 
+The live demo is a voice-enabled AI agent that can take pizza orders via spoken conversation.
+
+https://red.ht/pizza[Pizza Shop Demo^]
+
 == What you'll learn
 
 In this workshop, you will:
