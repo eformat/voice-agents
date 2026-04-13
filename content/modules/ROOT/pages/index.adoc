@@ -4,13 +4,21 @@
 :icons: font
 :imagesdir: ../images
 
-image::daisy.png[Daisy Cat, 200, float=right]
+++++
+<div id="lightbox"></div>
+++++
+
+++++
+<div class="imageblock" style="float:right">
+  <img src="_images/daisy.png" alt="Daisy Cat" width="200" class="zoom">
+</div>
+++++
+
+Welcome to the Voice Lab.
 
 🐈 Daisy Cat is famous! 🐈 and was one of the main attractions in the PetBattle app that formed the technical exercises in the book - link:https://www.redhat.com/en/engage/devops-culture-practice-openshift-ebooks[DevOps Culture and Practice with OpenShift - Deliver continuous business value through people, process, and technology^]. Daisy inspired us to use many of the open practices described in the book to help deliver this Roadshow and we hope that you are like Daisy, where link:https://en.wikipedia.org/wiki/Curiosity_killed_the_cat[**curiosity killed the cat but satisfaction brought it back**^].
 
-Welcome to the RHOAI Roadshow. Each of the modules is self-contained so can be run on the provided environment separately.
-
-You get to choose the adventure you wish to explore Red Hat OpenShift AI with.
+Each of the modules is self-contained so can be run on the provided environment.
 
 [NOTE]
 ====
@@ -22,7 +30,11 @@ All images have _lightbox_ attached to them so they can overlay on top of the we
 Be sure to set your cluster domain in the top navigation bar and hit `Save` - this updates the documentation hyperlinks to point to your cluster.
 ====
 
-image::top-nav-bar.png[Top Navigation Bar]
+++++
+<div class="imageblock">
+  <img src="_images/top-nav-bar.png" alt="Top Navigation Bar" class="zoom">
+</div>
+++++
 
 Your cluster should be available from the Console URL
 
